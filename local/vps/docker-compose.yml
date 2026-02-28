@@ -116,7 +116,7 @@ services:
   # Platform UI
   # ---------------------------------------------------------------------------
   platform-ui:
-    image: ${PLATFORM_UI_IMAGE:-ghcr.io/wopr-network/wopr-platform-ui:staging}
+    image: ${PLATFORM_UI_IMAGE:-ghcr.io/wopr-network/wopr-platform-ui:latest}
     container_name: wopr-vps-platform-ui
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:3100
