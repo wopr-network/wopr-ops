@@ -115,39 +115,59 @@ Two approaches available. Use the DinD topology when testing multi-machine behav
 
 ### Approach A — Two-Machine DinD (recommended for topology testing)
 
-**Verified working: 2026-02-28.** Both outer containers healthy, all 8 inner services running, InferenceWatchdog polling and updating `service_health` in DB.
+**Verified working: 2026-02-28.** CD via Watchtower fully operational.
 
 Files: `local/` directory.
 
 Replicates exact production topology: two Docker-in-Docker containers (`wopr-vps`, `wopr-gpu`) on a `wopr-dev` bridge network. Platform-api reaches GPU services via `wopr-gpu` hostname, exactly as prod reaches the DO GPU droplet by IP.
 
+#### CD — how images get updated automatically
+
+On every merge to `main`:
+- `wopr-platform`: CI pushes `:latest` + `:<sha>` to GHCR
+- `wopr-platform-ui`: CI pushes `:staging`/`:latest`/`:<sha>` (staging URL baked in) AND `:local` (localhost:3100 baked in)
+
+Watchtower inside the VPS inner stack polls GHCR every 60s. When it sees a new digest on `:latest` (platform-api) or `:local` (platform-ui), it pulls and restarts the container automatically. **Total lag: ~5 minutes from merge to running locally.**
+
+#### First-time setup (fresh clone or after WSL restart wipes ~/wopr-ops)
+
 ```bash
-# One-time setup: copy env files and fill in secrets
-cp local/vps/.env.example local/vps/.env   # edit: add real Stripe test keys, generate secrets
-cp local/gpu/.env.example local/gpu/.env   # defaults are fine for local dev
+# 1. Clone wopr-ops if missing (never use /tmp — wiped on WSL restart)
+git clone https://github.com/wopr-network/wopr-ops.git ~/wopr-ops
 
-# One-time setup: build platform images (GHCR tags are stale)
-cd /path/to/wopr-platform && docker build -t ghcr.io/wopr-network/wopr-platform:local .
-cd /path/to/wopr-platform-ui && docker build -t ghcr.io/wopr-network/wopr-platform-ui:local .
+# 2. Create local/vps/.env from ~/wopr-platform/.env on the host
+#    (gitignored — must recreate after fresh clone)
+grep -v '^#' ~/wopr-platform/.env | grep -v '^$' | \
+  grep -v 'DOMAIN=' | grep -v '_DB_PATH=' | grep -v 'METER_' | \
+  grep -v 'SNAPSHOT_' | grep -v 'TENANT_KEYS_' > ~/wopr-ops/local/vps/.env
+echo "POSTGRES_PASSWORD=wopr_local_dev" >> ~/wopr-ops/local/vps/.env
+echo "GPU_NODE_SECRET=wopr_local_gpu_secret" >> ~/wopr-ops/local/vps/.env
+echo "COOKIE_DOMAIN=localhost" >> ~/wopr-ops/local/vps/.env
 
-# Load platform images into VPS inner daemon (must do this after every rebuild)
-docker save ghcr.io/wopr-network/wopr-platform:local | docker exec -i wopr-vps docker load
-docker save ghcr.io/wopr-network/wopr-platform-ui:local | docker exec -i wopr-vps docker load
+# 3. Start the stack
+docker compose -f ~/wopr-ops/local/docker-compose.yml up -d
 
-# Start both machines
-docker compose -f local/docker-compose.yml up -d
+# 4. VPS boots, logs in to GHCR, pulls images, starts inner stack (~2 min first boot)
+docker logs -f wopr-vps   # watch for "==> VPS stack started."
 
-# Wait for VPS inner stack to start (~2 min first boot, ~30s subsequent)
+# 5. Seed GPU node registration (run after both containers are healthy)
+bash ~/wopr-ops/local/gpu-seeder.sh
+```
+
+#### Normal usage (stack already running)
+
+```bash
+# Check inner stack status
 docker exec wopr-vps docker ps
 
-# Seed GPU node registration (run after both containers are healthy)
-bash local/gpu-seeder.sh
+# Watch Watchtower CD activity
+docker exec wopr-vps docker logs -f wopr-vps-watchtower
 
 # Teardown (preserves volumes)
-docker compose -f local/docker-compose.yml down
+docker compose -f ~/wopr-ops/local/docker-compose.yml down
 
 # Teardown and wipe all data
-docker compose -f local/docker-compose.yml down -v
+docker compose -f ~/wopr-ops/local/docker-compose.yml down -v
 ```
 
 **First boot note:** GPU container installs Docker + NVIDIA Container Toolkit on first boot (~90s). Subsequent boots reuse the `gpu-docker-data` volume (~15s). VPS startup takes 60-120s for inner dockerd to initialize against existing volume state.
