@@ -87,8 +87,19 @@ services:
   # --- Platform API --------------------------------------------------------
   # Simulates the VPS platform-api container.
   # docker.sock is mounted so Dockerode can spawn tenant bot containers locally.
+  #
+  # Image selection:
+  #   Production/CI: ghcr.io/wopr-network/wopr-platform:local (default)
+  #   Local build:   build locally first, then override:
+  #     docker build -t wopr-platform-api:local /tmp/wopr-platform
+  #     IMAGE=wopr-platform-api:local docker compose -f docker-compose.local.yml up -d platform-api
+  #   Or set IMAGE env var in shell before running compose.
   platform-api:
-    image: ghcr.io/wopr-network/wopr-platform:latest
+    image: ${PLATFORM_API_IMAGE:-ghcr.io/wopr-network/wopr-platform:local}
+    # host.docker.internal allows containers to reach services bound on the host
+    # (e.g. standalone GPU containers running outside compose on ports 8080-8083).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -136,7 +147,7 @@ services:
 
   # --- Platform UI ---------------------------------------------------------
   platform-ui:
-    image: ghcr.io/wopr-network/wopr-platform-ui:latest
+    image: ghcr.io/wopr-network/wopr-platform-ui:local
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:3100
       BETTER_AUTH_URL: http://localhost:3100
@@ -309,6 +320,15 @@ services:
   #
   # NODE_ID must match across runs — it is the stable identity of this local
   # GPU node in the database.
+  #
+  # GPU_NODE_HOST controls what host the InferenceWatchdog polls for health checks.
+  # Two modes:
+  #   - Compose GPU services (default for full compose stack):
+  #       GPU_NODE_HOST=llama-cpp   (service name, reachable on wopr-local network)
+  #   - Standalone GPU containers on host (GPU containers NOT in this compose):
+  #       GPU_NODE_HOST=host.docker.internal  (reaches host-bound ports 8080-8083)
+  #
+  # The .env.local default is host.docker.internal for the standalone GPU case.
   gpu-seeder:
     image: postgres:16-alpine
     depends_on:
@@ -318,10 +338,13 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD}
       GPU_NODE_SECRET: ${GPU_NODE_SECRET}
       GPU_NODE_ID: ${GPU_NODE_ID:-local-gpu-node-001}
+      GPU_NODE_HOST: ${GPU_NODE_HOST:-host.docker.internal}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     entrypoint: >
       sh -c '
         set -e
-        echo "==> Seeding GPU node row in database..."
+        echo "==> Seeding GPU node row in database (host=${GPU_NODE_HOST:-host.docker.internal})..."
         psql -h postgres -U wopr -d wopr_platform -c "
           INSERT INTO gpu_nodes (id, region, size, status, provision_stage, created_at, updated_at, host)
           VALUES (
@@ -332,7 +355,7 @@ services:
             '"'"'registering'"'"',
             EXTRACT(EPOCH FROM NOW())::bigint,
             EXTRACT(EPOCH FROM NOW())::bigint,
-            '"'"'llama-cpp'"'"'
+            '"'"'${GPU_NODE_HOST:-host.docker.internal}'"'"'
           )
           ON CONFLICT (id) DO UPDATE SET
             host = EXCLUDED.host,
