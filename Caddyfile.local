@@ -1,0 +1,30 @@
+# Caddyfile for local development — plain HTTP only, no TLS, no Cloudflare.
+#
+# Add these to /etc/hosts (or use direct ports instead):
+#   127.0.0.1 api.localhost app.localhost
+#
+# Access:
+#   http://localhost          → platform-ui (landing / dashboard)
+#   http://app.localhost      → platform-ui (app subdomain)
+#   http://api.localhost      → platform-api
+#   http://localhost:3100     → platform-api (direct, bypasses Caddy)
+#   http://localhost:3000     → platform-ui (direct, bypasses Caddy)
+
+{
+	# Disable automatic HTTPS — local dev uses plain HTTP
+	auto_https off
+}
+
+# Root and app subdomain → platform-ui
+localhost {
+	reverse_proxy platform-ui:3000
+}
+
+app.localhost {
+	reverse_proxy platform-ui:3000
+}
+
+# API subdomain → platform-api
+api.localhost {
+	reverse_proxy platform-api:3100
+}

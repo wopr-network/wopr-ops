@@ -106,3 +106,116 @@ To find the previous image SHA: check DEPLOYMENTS.md for last successful deploy 
 
 - API: `https://api.wopr.bot/health` → `{"status":"ok"}`
 - UI: `https://wopr.bot` → 200 with valid TLS
+
+---
+
+## Local Development
+
+Files: `docker-compose.local.yml`, `Caddyfile.local`, `.env.local.example` (all in wopr-ops root).
+
+This stack simulates the full production topology on a single host with GPU pass-through. Two logical nodes run on one machine: a VPS node (postgres, platform-api, platform-ui, Caddy) and a GPU node (llama-cpp, qwen-embeddings, chatterbox, whisper). Both share the `wopr-local` Docker network so platform-api can reach GPU services by container name.
+
+### Prerequisites
+
+1. **NVIDIA Container Toolkit** — install from https://github.com/NVIDIA/nvidia-container-toolkit. Verify with `nvidia-smi` and `docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi`.
+
+2. **Model weights at `/opt/models/`** on the host — the compose file bind-mounts this path read-only into the GPU containers. Required files:
+   - `Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf` (~5 GB VRAM, recommended for RTX 3070)
+   - `qwen2-0_5b-instruct-q8_0.gguf` (~1 GB VRAM)
+   - Whisper model is auto-downloaded from HuggingFace on first start
+   - Chatterbox is a placeholder (see note below)
+
+   Download with huggingface-cli or llama.cpp's `tools/download.py`.
+
+3. **GHCR access** — `docker login ghcr.io` if pulling private images.
+
+4. **`.env.local`** — copy from `.env.local.example` and fill in secrets:
+   ```bash
+   cp .env.local.example .env.local
+   # Edit .env.local — generate secrets with: openssl rand -hex 32
+   ```
+
+### Starting the stack
+
+```bash
+# From wopr-ops directory
+docker compose -f docker-compose.local.yml --env-file .env.local up -d
+```
+
+Watch logs until healthy:
+
+```bash
+docker compose -f docker-compose.local.yml logs -f platform-api
+```
+
+### Seeding the GPU node registration
+
+Production GPU nodes self-register via cloud-init by POSTing to `/internal/gpu/register`. In local dev, run the seeder manually after the stack is healthy:
+
+```bash
+docker compose -f docker-compose.local.yml --env-file .env.local \
+  run --rm gpu-seeder
+```
+
+This does two things:
+1. Upserts a row in `gpu_nodes` with `host=llama-cpp` (the container name the InferenceWatchdog polls)
+2. POSTs `POST /internal/gpu/register?stage=done` with the GPU_NODE_SECRET to mark the node active
+
+The seeder is idempotent — safe to re-run. The `GPU_NODE_ID` in `.env.local` is the stable node identity.
+
+### Accessing services
+
+| Service | URL |
+|---------|-----|
+| Platform UI | http://localhost (via Caddy) or http://localhost:3000 (direct) |
+| Platform API | http://localhost:3100 (direct) |
+| API via Caddy | http://api.localhost (add to /etc/hosts) |
+| App via Caddy | http://app.localhost (add to /etc/hosts) |
+| llama-cpp | http://localhost:8080 |
+| chatterbox (placeholder) | http://localhost:8081 |
+| whisper | http://localhost:8082 |
+| qwen-embeddings | http://localhost:8083 |
+
+To use Caddy subdomains, add to `/etc/hosts`:
+```
+127.0.0.1 api.localhost app.localhost
+```
+
+### Health checks
+
+```bash
+curl http://localhost:3100/health           # platform-api → {"status":"ok"}
+curl -I http://localhost                    # Caddy → 200
+curl http://localhost:8080/health           # llama-cpp
+curl http://localhost:8082/health           # whisper
+curl http://localhost:8083/health           # qwen-embeddings
+```
+
+### Known limitations vs production
+
+| Area | Production | Local Dev |
+|------|-----------|-----------|
+| TLS | Caddy DNS-01 via Cloudflare, HTTPS everywhere | Plain HTTP, no TLS |
+| Domain | `wopr.bot`, `api.wopr.bot`, `app.wopr.bot` | `localhost`, `api.localhost`, `app.localhost` |
+| GPU node | Separate DO droplet, cloud-init self-registration | Same host, manual seeder |
+| GPU node reboot | InferenceWatchdog reboots DO droplet | Watchdog runs but reboot fails (no droplet) — harmless |
+| BETTER_AUTH_URL | `https://api.wopr.bot` | `http://localhost:3100` |
+| COOKIE_DOMAIN | `.wopr.bot` | `localhost` |
+| Chatterbox | `travisvn/chatterbox-tts-api:v1.0.1` (real TTS) | `fedirz/faster-whisper-server` placeholder on port 8081 — health checks pass but TTS does not work |
+| VRAM | A100 80 GB or similar | RTX 3070 8 GB — must use Q4 quantization for llama |
+| Stripe | Live keys, real payments | Test keys, no real charges |
+| Email | Resend with verified domain | Disabled (placeholder API key) |
+
+### Chatterbox placeholder
+
+The production chatterbox image (`travisvn/chatterbox-tts-api:v1.0.1`) requires validation on RTX 3070 (8 GB VRAM). Until that validation is done, the local stack uses `fedirz/faster-whisper-server` on port 8081 as a port/healthcheck-compatible placeholder. The InferenceWatchdog and platform-api will see port 8081 as healthy. TTS calls will fail with unexpected responses.
+
+To swap in the real chatterbox image once validated, edit `docker-compose.local.yml` — the service has a `# PLACEHOLDER` comment marking the image line and the required substitution.
+
+### Teardown
+
+```bash
+docker compose -f docker-compose.local.yml --env-file .env.local down -v
+```
+
+The `-v` flag removes volumes including the postgres database. Omit it to preserve data across restarts.
