@@ -247,14 +247,14 @@ services:
       - gpu
 
   # --- GPU: Chatterbox TTS -------------------------------------------------
-  # travisvn/chatterbox-tts-api:v1.0.1
+  # travisvn/chatterbox-tts-api:gpu
   # VRAM: ~5 GB on RTX 3070. Models are bundled in the image — no pre-download.
   # Inner port: 5123. Health: GET /health (or GET / as fallback).
   # TTS: POST /v1/audio/speech (OpenAI-compat, WOP-506) + POST /synthesize fallback.
   # Voice cloning: mount .wav samples into /app/voices (optional).
   chatterbox:
     <<: *gpu-common
-    image: travisvn/chatterbox-tts-api:v1.0.1
+    image: travisvn/chatterbox-tts-api:gpu
     container_name: wopr-local-chatterbox
     ports:
       - "8081:5123"
