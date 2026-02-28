@@ -58,34 +58,16 @@ echo "==> Seeding gpu_nodes row into wopr-vps postgres..."
 # ---------------------------------------------------------------------------
 # Run psql inside the vps container targeting its inner postgres
 # ---------------------------------------------------------------------------
-docker exec wopr-vps sh -c "
-  PGPASSWORD='$POSTGRES_PASSWORD' psql -h localhost -p 5432 -U wopr -d wopr_platform -c \"
-    INSERT INTO gpu_nodes (id, host, region, size, status, provision_stage, service_health, monthly_cost_cents)
-    VALUES (
-      '$GPU_NODE_ID',
-      '$GPU_IP',
-      'local',
-      'rtx-3070',
-      'active',
-      'done',
-      '{\\\"llama\\\":true,\\\"chatterbox\\\":true,\\\"whisper\\\":true,\\\"qwen\\\":true}',
-      0
-    )
-    ON CONFLICT (id) DO UPDATE SET
-      host             = EXCLUDED.host,
-      status           = 'active',
-      provision_stage  = 'done',
-      service_health   = '{\\\"llama\\\":true,\\\"chatterbox\\\":true,\\\"whisper\\\":true,\\\"qwen\\\":true}',
-      updated_at       = EXTRACT(EPOCH FROM NOW())::bigint;
-  \"
-"
+SQL="INSERT INTO gpu_nodes (id, host, region, size, status, provision_stage, service_health, monthly_cost_cents) VALUES ('${GPU_NODE_ID}', '${GPU_IP}', 'local', 'rtx-3070', 'active', 'done', '{\"llama\":true,\"chatterbox\":true,\"whisper\":true,\"qwen\":true}', 0) ON CONFLICT (id) DO UPDATE SET host=EXCLUDED.host, status='active', provision_stage='done', service_health='{\"llama\":true,\"chatterbox\":true,\"whisper\":true,\"qwen\":true}', updated_at=EXTRACT(EPOCH FROM NOW())::bigint;"
+
+docker exec wopr-vps docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" wopr-vps-postgres psql -U wopr -d wopr_platform -c "${SQL}"
 
 echo "==> GPU node row upserted (host=$GPU_IP)."
 echo ""
 echo "==> Restarting platform-api so InferenceWatchdog picks up the new row..."
-docker exec wopr-vps sh -c "cd /workspace/vps && docker compose restart platform-api" 2>/dev/null || \
+docker exec wopr-vps docker restart wopr-vps-platform-api 2>/dev/null || \
   echo "  NOTE: Could not restart platform-api automatically. Run manually:"
-echo "  docker exec wopr-vps sh -c 'cd /workspace/vps && docker compose restart platform-api'"
+echo "  docker exec wopr-vps docker restart wopr-vps-platform-api"
 echo ""
 echo "==> Done. Verify with:"
 echo "  docker exec wopr-vps sh -c \"PGPASSWORD=\$POSTGRES_PASSWORD psql -h localhost -U wopr -d wopr_platform -c 'SELECT id, host, status, service_health FROM gpu_nodes;'\""

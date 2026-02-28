@@ -93,7 +93,7 @@ services:
       GPU_NODE_SECRET: ${GPU_NODE_SECRET}
       # InferenceWatchdog reads host from the gpu_nodes DB row set by gpu-seeder.
       # The seeder sets host=wopr-gpu, which resolves via extra_hosts above.
-      DO_API_TOKEN: ${DO_API_TOKEN:-}
+      DO_API_TOKEN: ${DO_API_TOKEN:-local-dev-fake}
       REGISTRY_USERNAME: ${REGISTRY_USERNAME:-}
       REGISTRY_PASSWORD: ${REGISTRY_PASSWORD:-}
       REGISTRY_SERVER: ${REGISTRY_SERVER:-ghcr.io}

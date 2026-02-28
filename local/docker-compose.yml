@@ -51,9 +51,11 @@ services:
     privileged: true
     environment:
       DOCKER_TLS_CERTDIR: ""
+      DO_API_TOKEN: ${DO_API_TOKEN:-local-dev-fake}
     volumes:
       - ./vps:/workspace/vps:ro
       - vps-docker-data:/var/lib/docker
+      - /home/tsavo/.docker/config.json:/root/.docker/config.json:ro
     networks:
       - wopr-dev
     ports:
@@ -64,7 +66,7 @@ services:
         dockerd-entrypoint.sh &
         DOCKERD_PID=$$!
         echo '==> Waiting for Docker daemon to be ready...'
-        timeout=30
+        timeout=120
         while ! docker info >/dev/null 2>&1; do
           sleep 1
           timeout=$$((timeout - 1))
@@ -79,6 +81,7 @@ services:
         echo '==> VPS stack started. Container will stay alive.'
         wait $$DOCKERD_PID
       "
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "docker compose -f /workspace/vps/docker-compose.yml ps --format json 2>/dev/null | grep -q 'platform-api'"]
       interval: 30s
@@ -111,6 +114,7 @@ services:
       - /opt/models:/opt/models:ro
       - /opt/voices:/opt/voices:ro
       - gpu-docker-data:/var/lib/docker
+      - /home/tsavo/.docker/config.json:/root/.docker/config.json:ro
     networks:
       - wopr-dev
     ports:

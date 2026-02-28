@@ -121,5 +121,5 @@ echo "==> GPU stack started."
 echo "==> Services: llama-cpp:8080, chatterbox:8081, whisper:8082, qwen-embeddings:8083"
 echo "==> Container will stay alive. Use 'docker compose logs -f' inside to follow logs."
 
-# Keep the container alive (wait on dockerd)
-wait $DOCKERD_PID
+# Keep the container alive
+tail -f /dev/null

@@ -1,0 +1,5 @@
+# Local development secrets — never commit actual .env files
+local/vps/.env
+local/gpu/.env
+.env.local
+*.env.local
