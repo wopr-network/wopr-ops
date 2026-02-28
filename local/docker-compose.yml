@@ -63,20 +63,19 @@ services:
     ports:
       - "80:80"      # caddy → platform-ui
       - "3100:3100"  # platform-api direct
-    command:
-      - dockerd-entrypoint.sh
+    entrypoint:
       - sh
       - -c
       - |
-        unset DOCKER_HOST
-        echo '==> Waiting for inner daemon socket...'
+        dockerd-entrypoint.sh &
+        echo '==> Waiting for Docker daemon...'
         until docker info >/dev/null 2>&1; do sleep 1; done
         echo '==> Docker daemon ready. Starting VPS compose stack...'
         cd /workspace/vps
         set -a && . ./.env && set +a
         docker compose up -d
         echo '==> VPS stack started.'
-        tail -f /dev/null
+        wait
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "docker compose -f /workspace/vps/docker-compose.yml ps --format json 2>/dev/null | grep -q 'platform-api'"]
