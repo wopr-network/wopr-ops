@@ -6,21 +6,23 @@
 
 **Status:** PRE-PRODUCTION — not yet deployed to VPS
 **Last Updated:** 2026-02-28
-**Last Operation:** Initial logbook creation
+**Last Operation:** Status check — all code blockers confirmed Done in Linear
 
 ## Production Blockers (must resolve before go-live)
 
-| Issue | Severity | Description |
-|-------|----------|-------------|
-| WOP-990 | CRITICAL | Migration 0031 drops `tenant_customers` + `stripe_usage_reports` — PR #309 open |
-| WOP-991 | HIGH | Fleet pullImage fails for private ghcr.io — no authconfig in Dockerode call |
-| WOP-992 | HIGH | Session-cookie users get 401 on fleet REST API — needs design decision |
+All blockers resolved. No CRITICAL or HIGH blockers outstanding.
+
+| Issue | Severity | Description | Status |
+|-------|----------|-------------|--------|
+| WOP-990 | CRITICAL | Migration 0031 drops `tenant_customers` + `stripe_usage_reports` — PR #309 | **Done** — merged 2026-02-27 |
+| WOP-991 | HIGH | Fleet pullImage fails for private ghcr.io — no authconfig in Dockerode call — PR #310 | **Done** — merged 2026-02-25 |
+| WOP-992 | HIGH | Session-cookie users get 401 on fleet REST API — PR #311 | **Done** — merged 2026-02-25 |
 
 ## Go-Live Checklist
 
-- [ ] WOP-990 merged and verified
-- [ ] WOP-991 merged and verified
-- [ ] WOP-992 resolved
+- [x] WOP-990 merged and verified
+- [x] WOP-991 merged and verified
+- [x] WOP-992 resolved
 - [ ] DO droplet provisioned
 - [ ] DNS: wopr.bot A record → droplet IP (Cloudflare proxy OFF)
 - [ ] DNS: api.wopr.bot A record → droplet IP (Cloudflare proxy OFF)
@@ -83,9 +85,9 @@ All secrets live on VPS at `/root/wopr-platform/.env` — never committed anywhe
 - `COOKIE_DOMAIN` must be `.wopr.bot` in prod
 - Stripe webhook HMAC key = full `whsec_XXX` string — do not strip the prefix
 - `checkout.session.completed` silently ignores events where `session.customer` is null
-- Dockerode `docker.pull()` needs explicit `authconfig` param for private GHCR images (WOP-991)
-- Migration 0031 is dangerous until WOP-990 is confirmed fixed — do not run in prod
-- `drizzle-kit migrate` runs ALL pending migrations in sequence — migration 0031 is in the queue. Do NOT run migrate in prod until WOP-990 (PR #309) is confirmed merged.
+- Dockerode `docker.pull()` needs explicit `authconfig` param for private GHCR images — fixed in WOP-991 (PR #310), now reads `REGISTRY_USERNAME`/`REGISTRY_PASSWORD`/`REGISTRY_SERVER` env vars
+- Migration 0031 was dangerous (dropped `tenant_customers` + `stripe_usage_reports`) — fixed in WOP-990 (PR #309), migration 0032 recreates both tables. Safe to run as of 2026-02-27.
+- `drizzle-kit migrate` runs ALL pending migrations in sequence — migration 0031 + 0032 are both in the queue and are now safe to run.
 
 ## Rollback Procedure
 
