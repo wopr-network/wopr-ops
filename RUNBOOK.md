@@ -6,7 +6,7 @@
 
 **Status:** PRE-PRODUCTION — not yet deployed to VPS
 **Last Updated:** 2026-02-28
-**Last Operation:** Status check — all code blockers confirmed Done in Linear
+**Last Operation:** Local dev stack validated — VPS node + voice profile healthy; GPU node seeding pending
 
 ## Production Blockers (must resolve before go-live)
 
@@ -115,21 +115,77 @@ Files: `docker-compose.local.yml`, `Caddyfile.local`, `.env.local.example` (all 
 
 This stack simulates the full production topology on a single host with GPU pass-through. Two logical nodes run on one machine: a VPS node (postgres, platform-api, platform-ui, Caddy) and a GPU node (llama-cpp, qwen-embeddings, chatterbox, whisper). Both share the `wopr-local` Docker network so platform-api can reach GPU services by container name.
 
+**Last validated:** 2026-02-28. Full VPS node stack confirmed healthy. Voice GPU profile confirmed running. GPU node seeding not yet done — next step.
+
+### Current Running State (2026-02-28)
+
+| Container | Status | Notes |
+|-----------|--------|-------|
+| wopr-ops-postgres-1 | healthy | |
+| wopr-ops-platform-api-1 | healthy | port 3100 inside network |
+| wopr-ops-platform-ui-1 | healthy | port 3000 inside network |
+| wopr-ops-caddy-1 | running | port 80 → ui, api.localhost → api |
+| wopr-local-chatterbox | running | port 8081, `--profile voice` |
+| wopr-local-whisper | running | port 8082, `--profile voice` |
+
+GPU profile (`--profile llm`: llama-cpp port 8080, qwen-embeddings port 8083) not yet started. Next action: seed GPU node registration.
+
+### GPU Service Images (Validated — do not substitute)
+
+| Service | Image | Port | Notes |
+|---------|-------|------|-------|
+| chatterbox | `travisvn/chatterbox-tts-api:gpu` | 8081:5123 | DEVICE=cuda. **`:v1.0.1` is CPU-only** — do NOT use that tag |
+| whisper | `fedirz/faster-whisper-server:0.6.0-rc.3-cuda` | 8082:8000 | |
+| llama-cpp | `ghcr.io/ggml-org/llama.cpp:server-cuda` | 8080 | Repo moved — **NOT `ggerganov`**, use `ggml-org` |
+| qwen-embeddings | `ghcr.io/ggml-org/llama.cpp:server-cuda` | 8083 | Same image, `--embedding --pooling mean`, model at `/opt/models/qwen2-0_5b-instruct-q8_0.gguf` |
+
+### Compose Profiles
+
+`docker-compose.local.yml` uses two profiles — only bring up what you need:
+
+```bash
+# VPS node only (postgres, platform-api, platform-ui, caddy)
+docker compose -f docker-compose.local.yml --env-file .env.local up -d
+
+# VPS node + voice GPU services (chatterbox + whisper)
+docker compose -f docker-compose.local.yml --env-file .env.local --profile voice up -d
+
+# VPS node + LLM GPU services (llama-cpp + qwen-embeddings)
+docker compose -f docker-compose.local.yml --env-file .env.local --profile llm up -d
+
+# Everything
+docker compose -f docker-compose.local.yml --env-file .env.local --profile voice --profile llm up -d
+```
+
 ### Prerequisites
 
 1. **NVIDIA Container Toolkit** — install from https://github.com/NVIDIA/nvidia-container-toolkit. Verify with `nvidia-smi` and `docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi`.
 
 2. **Model weights at `/opt/models/`** on the host — the compose file bind-mounts this path read-only into the GPU containers. Required files:
-   - `Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf` (~5 GB VRAM, recommended for RTX 3070)
+   - `llama.gguf` — symlink or rename of your llama GGUF model (Q4_K_M recommended for RTX 3070, ~5 GB VRAM)
    - `qwen2-0_5b-instruct-q8_0.gguf` (~1 GB VRAM)
    - Whisper model is auto-downloaded from HuggingFace on first start
-   - Chatterbox is a placeholder (see note below)
+   - Chatterbox downloads weights on first start
 
    Download with huggingface-cli or llama.cpp's `tools/download.py`.
 
-3. **GHCR access** — `docker login ghcr.io` if pulling private images.
+3. **GHCR login** — required to pull private platform images. Use a GitHub PAT with `read:packages` scope:
+   ```bash
+   echo <token> | docker login ghcr.io -u <github-username> --password-stdin
+   ```
+   Token for this environment stored in `~/github-runners/.env`.
 
-4. **`.env.local`** — copy from `.env.local.example` and fill in secrets:
+4. **Platform images: build locally** — GHCR only carries `latest` for platform-api and `staging` for platform-ui. Both tags are stale. Build from source:
+   ```bash
+   # platform-api
+   cd /path/to/wopr-platform && docker build -t ghcr.io/wopr-network/wopr-platform:local .
+
+   # platform-ui
+   cd /path/to/wopr-platform-ui && docker build -t ghcr.io/wopr-network/wopr-platform-ui:local .
+   ```
+   Update `docker-compose.local.yml` image references to `:local` tags when running from source.
+
+5. **`.env.local`** — copy from `.env.local.example` and fill in secrets:
    ```bash
    cp .env.local.example .env.local
    # Edit .env.local — generate secrets with: openssl rand -hex 32
@@ -138,14 +194,31 @@ This stack simulates the full production topology on a single host with GPU pass
 ### Starting the stack
 
 ```bash
-# From wopr-ops directory
-docker compose -f docker-compose.local.yml --env-file .env.local up -d
+# From wopr-ops directory — VPS node + voice profile (current validated config)
+docker compose -f docker-compose.local.yml --env-file .env.local --profile voice up -d
 ```
 
 Watch logs until healthy:
 
 ```bash
 docker compose -f docker-compose.local.yml logs -f platform-api
+```
+
+### Accessing services from WSL2
+
+From inside WSL2:
+
+```bash
+curl -H "Host: localhost" http://127.0.0.1/               # UI via Caddy (200)
+curl -H "Host: api.localhost" http://127.0.0.1/health     # API via Caddy
+curl http://127.0.0.1:3100/health                         # API direct
+```
+
+From Windows browser: use the WSL2 IP (e.g. `http://172.23.176.117/`). The IP changes on WSL2 restart — check with `ip addr show eth0` from inside WSL2.
+
+To use Caddy subdomains by name, add to `/etc/hosts` (WSL2) or `C:\Windows\System32\drivers\etc\hosts` (Windows):
+```
+127.0.0.1 api.localhost app.localhost
 ```
 
 ### Seeding the GPU node registration
@@ -163,32 +236,17 @@ This does two things:
 
 The seeder is idempotent — safe to re-run. The `GPU_NODE_ID` in `.env.local` is the stable node identity.
 
-### Accessing services
-
-| Service | URL |
-|---------|-----|
-| Platform UI | http://localhost (via Caddy) or http://localhost:3000 (direct) |
-| Platform API | http://localhost:3100 (direct) |
-| API via Caddy | http://api.localhost (add to /etc/hosts) |
-| App via Caddy | http://app.localhost (add to /etc/hosts) |
-| llama-cpp | http://localhost:8080 |
-| chatterbox (placeholder) | http://localhost:8081 |
-| whisper | http://localhost:8082 |
-| qwen-embeddings | http://localhost:8083 |
-
-To use Caddy subdomains, add to `/etc/hosts`:
-```
-127.0.0.1 api.localhost app.localhost
-```
+**Status:** GPU node seeding not yet done as of 2026-02-28. This is the next step.
 
 ### Health checks
 
 ```bash
 curl http://localhost:3100/health           # platform-api → {"status":"ok"}
 curl -I http://localhost                    # Caddy → 200
-curl http://localhost:8080/health           # llama-cpp
-curl http://localhost:8082/health           # whisper
-curl http://localhost:8083/health           # qwen-embeddings
+curl http://localhost:8081/health           # chatterbox (voice profile)
+curl http://localhost:8082/health           # whisper (voice profile)
+curl http://localhost:8080/health           # llama-cpp (llm profile)
+curl http://localhost:8083/health           # qwen-embeddings (llm profile)
 ```
 
 ### Known limitations vs production
@@ -196,26 +254,29 @@ curl http://localhost:8083/health           # qwen-embeddings
 | Area | Production | Local Dev |
 |------|-----------|-----------|
 | TLS | Caddy DNS-01 via Cloudflare, HTTPS everywhere | Plain HTTP, no TLS |
-| Domain | `wopr.bot`, `api.wopr.bot`, `app.wopr.bot` | `localhost`, `api.localhost`, `app.localhost` |
-| GPU node | Separate DO droplet, cloud-init self-registration | Same host, manual seeder |
+| Domain | `wopr.bot`, `api.wopr.bot` | `localhost`, `api.localhost` |
+| GPU node | Separate DO droplet, cloud-init self-registration | Same host, manual seeder (not yet run) |
 | GPU node reboot | InferenceWatchdog reboots DO droplet | Watchdog runs but reboot fails (no droplet) — harmless |
 | BETTER_AUTH_URL | `https://api.wopr.bot` | `http://localhost:3100` |
 | COOKIE_DOMAIN | `.wopr.bot` | `localhost` |
-| Chatterbox | `travisvn/chatterbox-tts-api:v1.0.1` (real TTS) | `fedirz/faster-whisper-server` placeholder on port 8081 — health checks pass but TTS does not work |
-| VRAM | A100 80 GB or similar | RTX 3070 8 GB — must use Q4 quantization for llama |
+| Platform images | Built by CI, pushed to GHCR | Build from source — GHCR tags are stale |
+| VRAM | A100 80 GB or similar | RTX 3070 8 GB — use Q4 quantization for llama |
 | Stripe | Live keys, real payments | Test keys, no real charges |
 | Email | Resend with verified domain | Disabled (placeholder API key) |
 
-### Chatterbox placeholder
+### Local dev gotchas
 
-The production chatterbox image (`travisvn/chatterbox-tts-api:v1.0.1`) requires validation on RTX 3070 (8 GB VRAM). Until that validation is done, the local stack uses `fedirz/faster-whisper-server` on port 8081 as a port/healthcheck-compatible placeholder. The InferenceWatchdog and platform-api will see port 8081 as healthy. TTS calls will fail with unexpected responses.
-
-To swap in the real chatterbox image once validated, edit `docker-compose.local.yml` — the service has a `# PLACEHOLDER` comment marking the image line and the required substitution.
+- **chatterbox `:v1.0.1` is CPU-only** — always use `:gpu` tag. The CPU tag will pull and start but inference will be unusably slow.
+- **llama.cpp image moved** — `ghcr.io/ggerganov/llama.cpp` no longer exists. The correct registry path is `ghcr.io/ggml-org/llama.cpp`.
+- **Caddyfile bare `localhost {}` triggers HTTPS** — Caddy interprets a bare hostname as a production domain and tries to obtain a certificate, binding port 443 only. Use `http://localhost {}` (explicit scheme) to bind port 80 for plain HTTP.
+- **`docker compose restart` does not re-read env_file** — use `--force-recreate` or `down && up` after any `.env.local` change.
+- **GHCR login required for private images** — platform-api and platform-ui images are in a private GHCR namespace. Token in `~/github-runners/.env`.
+- **Build platform images locally** — do not trust GHCR `:latest` or `:staging` tags; both are stale as of 2026-02-28.
 
 ### Teardown
 
 ```bash
-docker compose -f docker-compose.local.yml --env-file .env.local down -v
+docker compose -f docker-compose.local.yml --env-file .env.local --profile voice --profile llm down -v
 ```
 
 The `-v` flag removes volumes including the postgres database. Omit it to preserve data across restarts.
