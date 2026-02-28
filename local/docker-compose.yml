@@ -68,6 +68,8 @@ services:
       - sh
       - -c
       - |
+        echo '==> Waiting for inner daemon socket...'
+        until docker info >/dev/null 2>&1; do sleep 1; done
         echo '==> Docker daemon ready. Starting VPS compose stack...'
         cd /workspace/vps
         set -a && . ./.env && set +a
