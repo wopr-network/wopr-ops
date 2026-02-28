@@ -111,13 +111,38 @@ To find the previous image SHA: check DEPLOYMENTS.md for last successful deploy 
 
 ## Local Development
 
+Two approaches available. Use the DinD topology when testing multi-machine behavior. Use the flat approach for rapid single-service iteration.
+
+### Approach A — Two-Machine DinD (recommended for topology testing)
+
+Files: `local/` directory (created 2026-02-28).
+
+Replicates exact production topology: two Docker-in-Docker containers (`wopr-vps`, `wopr-gpu`) on a `wopr-dev` bridge network. Platform-api reaches GPU services via `wopr-gpu` hostname, exactly as prod reaches the DO GPU droplet by IP.
+
+```bash
+# Start both machines
+docker compose -f local/docker-compose.yml up -d
+
+# Seed GPU node registration (run after both containers are healthy)
+bash local/gpu-seeder.sh
+
+# Teardown
+docker compose -f local/docker-compose.yml down -v
+```
+
+See `local/README.md` for full usage, commands, and topology diagram.
+
+**First boot note:** GPU container installs Docker + NVIDIA Container Toolkit on first boot (~90s). Subsequent boots reuse the `gpu-docker-data` volume (~15s).
+
+### Approach B — Flat single-host compose (rapid iteration)
+
 Files: `docker-compose.local.yml`, `Caddyfile.local`, `.env.local.example` (all in wopr-ops root).
 
 This stack simulates the full production topology on a single host with GPU pass-through. Two logical nodes run on one machine: a VPS node (postgres, platform-api, platform-ui, Caddy) and a GPU node (llama-cpp, qwen-embeddings, chatterbox, whisper). Both share the `wopr-local` Docker network so platform-api can reach GPU services by container name.
 
 **Last validated:** 2026-02-28. Full VPS node stack confirmed healthy. Voice GPU profile confirmed running. GPU node seeder updated to use direct DB insert (see seeding section).
 
-### Current Running State (2026-02-28)
+### Current Running State — Approach B flat compose (2026-02-28)
 
 | Container | Status | Notes |
 |-----------|--------|-------|
@@ -191,7 +216,7 @@ docker compose -f docker-compose.local.yml --env-file .env.local --profile voice
    # Edit .env.local — generate secrets with: openssl rand -hex 32
    ```
 
-### Starting the stack
+### Starting the flat stack (Approach B)
 
 ```bash
 # From wopr-ops directory — VPS node + voice profile (current validated config)
@@ -293,13 +318,14 @@ curl http://localhost:8080/health           # llama-cpp (llm profile)
 curl http://localhost:8083/health           # qwen-embeddings (llm profile)
 ```
 
-### Known limitations vs production
+### Known limitations vs production (both local dev approaches)
 
 | Area | Production | Local Dev |
 |------|-----------|-----------|
 | TLS | Caddy DNS-01 via Cloudflare, HTTPS everywhere | Plain HTTP, no TLS |
 | Domain | `wopr.bot`, `api.wopr.bot` | `localhost`, `api.localhost` |
-| GPU node | Separate DO droplet, cloud-init self-registration | Same host, direct DB insert via gpu-seeder |
+| GPU node network | Separate DO droplet on private IP | DinD: `wopr-gpu` hostname on bridge. Flat: `host.docker.internal` |
+| GPU node registration | Cloud-init self-registers via DO API + `/internal/gpu/register` | Direct DB insert via gpu-seeder |
 | GPU node reboot | InferenceWatchdog reboots DO droplet | Watchdog runs but reboot fails (no droplet) — harmless |
 | BETTER_AUTH_URL | `https://api.wopr.bot` | `http://localhost:3100` |
 | COOKIE_DOMAIN | `.wopr.bot` | `localhost` |
@@ -307,6 +333,7 @@ curl http://localhost:8083/health           # qwen-embeddings (llm profile)
 | VRAM | A100 80 GB or similar | RTX 3070 8 GB — use Q4 quantization for llama |
 | Stripe | Live keys, real payments | Test keys, no real charges |
 | Email | Resend with verified domain | Disabled (placeholder API key) |
+| First boot (DinD GPU) | N/A | ~90s to install Docker + NVIDIA toolkit inside container |
 
 ### Local dev gotchas
 

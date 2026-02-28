@@ -1,0 +1,141 @@
+## Two-machine local dev topology.
+## Replicates production: VPS droplet + GPU droplet as two separate machines.
+## Communication is via the wopr-dev bridge network — the gpu container is
+## reachable from the vps container by hostname "wopr-gpu", mirroring how
+## production platform-api reaches the DO GPU droplet by its private IP.
+##
+## Usage:
+##   # Start both machines
+##   docker compose -f local/docker-compose.yml up -d
+##
+##   # Seed GPU node row into platform postgres (run after both machines are up)
+##   bash local/gpu-seeder.sh
+##
+##   # Tear down (preserves volumes)
+##   docker compose -f local/docker-compose.yml down
+##
+##   # Tear down and wipe all data
+##   docker compose -f local/docker-compose.yml down -v
+##
+## Prerequisites:
+##   - NVIDIA Container Toolkit installed on the host
+##   - Model weights at /opt/models/ on host
+##   - Copy local/vps/.env.example to local/vps/.env and fill in values
+##   - Copy local/gpu/.env.example to local/gpu/.env and fill in values
+##
+## Port mapping (host → service):
+##   80    → wopr-vps → caddy → platform-ui
+##   3100  → wopr-vps → platform-api (direct, bypasses Caddy)
+##   8080  → wopr-gpu → llama-cpp
+##   8081  → wopr-gpu → chatterbox
+##   8082  → wopr-gpu → whisper
+##   8083  → wopr-gpu → qwen-embeddings
+##
+## Topology note:
+##   Both DinD containers share the wopr-dev bridge network at the OUTER level.
+##   The inner compose stacks run inside each container using the inner Docker
+##   daemon. GPU services are NOT on wopr-dev — only the gpu container itself is.
+##   Platform-api reaches GPU services via: wopr-gpu:8080-8083 (host networking
+##   between the two outer containers on wopr-dev).
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # VPS machine — Ubuntu + Docker, runs the platform compose stack
+  # Simulates the DigitalOcean VPS droplet
+  # ---------------------------------------------------------------------------
+  vps:
+    image: docker:27-dind
+    container_name: wopr-vps
+    hostname: wopr-vps
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - ./vps:/workspace/vps:ro
+      - vps-docker-data:/var/lib/docker
+    networks:
+      - wopr-dev
+    ports:
+      - "80:80"      # caddy → platform-ui
+      - "3100:3100"  # platform-api direct
+    command: >
+      sh -c "
+        dockerd-entrypoint.sh &
+        DOCKERD_PID=$$!
+        echo '==> Waiting for Docker daemon to be ready...'
+        timeout=30
+        while ! docker info >/dev/null 2>&1; do
+          sleep 1
+          timeout=$$((timeout - 1))
+          if [ $$timeout -le 0 ]; then
+            echo 'ERROR: Docker daemon did not start in 30s'
+            exit 1
+          fi
+        done
+        echo '==> Docker daemon ready. Starting VPS compose stack...'
+        cd /workspace/vps
+        docker compose up -d
+        echo '==> VPS stack started. Container will stay alive.'
+        wait $$DOCKERD_PID
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "docker compose -f /workspace/vps/docker-compose.yml ps --format json 2>/dev/null | grep -q 'platform-api'"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # GPU machine — Ubuntu + Docker + NVIDIA, runs the GPU inference stack
+  # Simulates the DigitalOcean GPU droplet
+  #
+  # The nvidia/cuda base image does not include Docker. The entrypoint.sh script
+  # installs Docker + NVIDIA Container Toolkit at container start and then runs
+  # the GPU compose stack. On first boot this takes ~60-90s.
+  # ---------------------------------------------------------------------------
+  gpu:
+    image: nvidia/cuda:12.4.1-base-ubuntu22.04
+    container_name: wopr-gpu
+    hostname: wopr-gpu
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./gpu:/workspace/gpu:ro
+      - /opt/models:/opt/models:ro
+      - /opt/voices:/opt/voices:ro
+      - gpu-docker-data:/var/lib/docker
+    networks:
+      - wopr-dev
+    ports:
+      - "8080:8080"  # llama-cpp
+      - "8081:8081"  # chatterbox
+      - "8082:8082"  # whisper
+      - "8083:8083"  # qwen-embeddings
+    command: ["/workspace/gpu/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082/health || curl -sf http://localhost:8081/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s
+      retries: 5
+
+# ---------------------------------------------------------------------------
+# Bridge network — both containers are attached; hostname resolution works
+# between them. Wopr-gpu is reachable from inside the vps container (and
+# its inner Docker network) at hostname "wopr-gpu", matching prod topology.
+# ---------------------------------------------------------------------------
+networks:
+  wopr-dev:
+    name: wopr-dev
+    driver: bridge
+
+volumes:
+  vps-docker-data:
+  gpu-docker-data:

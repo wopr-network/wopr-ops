@@ -1,0 +1,155 @@
+## VPS inner compose stack — runs INSIDE the wopr-vps DinD container.
+##
+## Services: postgres, platform-api, platform-ui, caddy
+##
+## This is NOT invoked directly from the host. It is started by the wopr-vps
+## container's command in local/docker-compose.yml.
+##
+## GPU services run in the separate wopr-gpu container. Platform-api reaches
+## them via the wopr-dev bridge network at hostname "wopr-gpu" on ports
+## 8080-8083, matching how production platform-api reaches the GPU droplet.
+##
+## The wopr-gpu hostname is resolved via the outer bridge network. However,
+## inside the VPS DinD container the inner Docker daemon has its OWN network
+## stack. The vps DinD container's eth0 (on wopr-dev) IS reachable via
+## host-gateway from inner containers. We use extra_hosts to expose wopr-gpu
+## by resolving it from the outer network at compose startup time.
+##
+## Note: platform-api ports are NOT published here — the outer vps container
+## publishes port 3100 and Caddy port 80 to the host.
+
+networks:
+  wopr-vps-local:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  platform_data:
+  caddy_data:
+  caddy_config:
+  wopr_shared_node_modules:
+    name: wopr-vps-shared-node-modules
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Postgres
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: wopr-vps-postgres
+    environment:
+      POSTGRES_USER: wopr
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: wopr_platform
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wopr"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - wopr-vps-local
+    ports:
+      - "5432:5432"  # expose so gpu-seeder script can reach from outer DinD
+
+  # ---------------------------------------------------------------------------
+  # Platform API
+  # ---------------------------------------------------------------------------
+  platform-api:
+    image: ${PLATFORM_API_IMAGE:-ghcr.io/wopr-network/wopr-platform:local}
+    container_name: wopr-vps-platform-api
+    # extra_hosts maps wopr-gpu to the host gateway so inner containers can
+    # resolve and reach the outer wopr-gpu container on wopr-dev.
+    # host-gateway resolves to the DinD container's default route — which IS
+    # the wopr-dev bridge — so wopr-gpu:8080-8083 is reachable.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "wopr-gpu:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - platform_data:/data
+      - wopr_shared_node_modules:/shared/node_modules:ro
+    environment:
+      DATABASE_URL: postgresql://wopr:${POSTGRES_PASSWORD}@postgres:5432/wopr_platform
+      METER_WAL_PATH: /data/meter-wal.jsonl
+      METER_DLQ_PATH: /data/meter-dlq.jsonl
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_DEFAULT_PRICE_ID: ${STRIPE_DEFAULT_PRICE_ID}
+      RESEND_API_KEY: ${RESEND_API_KEY:-re_placeholder_local_dev}
+      RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-noreply@localhost}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: http://localhost:3100
+      UI_ORIGIN: http://localhost,http://localhost:3000
+      PLATFORM_DOMAIN: localhost
+      PLATFORM_SECRET: ${PLATFORM_SECRET}
+      WOPR_BOT_IMAGE: ${WOPR_BOT_IMAGE:-ghcr.io/wopr-network/wopr:latest}
+      GPU_NODE_SECRET: ${GPU_NODE_SECRET}
+      # InferenceWatchdog reads host from the gpu_nodes DB row set by gpu-seeder.
+      # The seeder sets host=wopr-gpu, which resolves via extra_hosts above.
+      DO_API_TOKEN: ${DO_API_TOKEN:-}
+      REGISTRY_USERNAME: ${REGISTRY_USERNAME:-}
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD:-}
+      REGISTRY_SERVER: ${REGISTRY_SERVER:-ghcr.io}
+      SHARED_NODE_MODULES_VOLUME: wopr-vps-shared-node-modules
+      NODE_ENV: development
+      COOKIE_DOMAIN: localhost
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - wopr-vps-local
+    ports:
+      - "3100:3100"  # published by the outer vps container
+
+  # ---------------------------------------------------------------------------
+  # Platform UI
+  # ---------------------------------------------------------------------------
+  platform-ui:
+    image: ${PLATFORM_UI_IMAGE:-ghcr.io/wopr-network/wopr-platform-ui:local}
+    container_name: wopr-vps-platform-ui
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3100
+      BETTER_AUTH_URL: http://localhost:3100
+      NEXT_PUBLIC_APP_DOMAIN: localhost
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - wopr-vps-local
+
+  # ---------------------------------------------------------------------------
+  # Caddy (plain HTTP, no TLS — local dev only)
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    container_name: wopr-vps-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      platform-api:
+        condition: service_healthy
+      platform-ui:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - wopr-vps-local
