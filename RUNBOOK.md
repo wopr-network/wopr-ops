@@ -6,7 +6,7 @@
 
 **Status:** PRE-PRODUCTION — not yet deployed to VPS
 **Last Updated:** 2026-02-28
-**Last Operation:** GPU node seeding approach corrected — direct DB insert required; seeder and RUNBOOK updated
+**Last Operation:** DinD local dev environment stabilized and fully verified (2026-02-28)
 
 ## Production Blockers (must resolve before go-live)
 
@@ -115,24 +115,118 @@ Two approaches available. Use the DinD topology when testing multi-machine behav
 
 ### Approach A — Two-Machine DinD (recommended for topology testing)
 
-Files: `local/` directory (created 2026-02-28).
+**Verified working: 2026-02-28.** Both outer containers healthy, all 8 inner services running, InferenceWatchdog polling and updating `service_health` in DB.
+
+Files: `local/` directory.
 
 Replicates exact production topology: two Docker-in-Docker containers (`wopr-vps`, `wopr-gpu`) on a `wopr-dev` bridge network. Platform-api reaches GPU services via `wopr-gpu` hostname, exactly as prod reaches the DO GPU droplet by IP.
 
 ```bash
+# One-time setup: copy env files and fill in secrets
+cp local/vps/.env.example local/vps/.env   # edit: add real Stripe test keys, generate secrets
+cp local/gpu/.env.example local/gpu/.env   # defaults are fine for local dev
+
+# One-time setup: build platform images (GHCR tags are stale)
+cd /path/to/wopr-platform && docker build -t ghcr.io/wopr-network/wopr-platform:local .
+cd /path/to/wopr-platform-ui && docker build -t ghcr.io/wopr-network/wopr-platform-ui:local .
+
+# Load platform images into VPS inner daemon (must do this after every rebuild)
+docker save ghcr.io/wopr-network/wopr-platform:local | docker exec -i wopr-vps docker load
+docker save ghcr.io/wopr-network/wopr-platform-ui:local | docker exec -i wopr-vps docker load
+
 # Start both machines
 docker compose -f local/docker-compose.yml up -d
+
+# Wait for VPS inner stack to start (~2 min first boot, ~30s subsequent)
+docker exec wopr-vps docker ps
 
 # Seed GPU node registration (run after both containers are healthy)
 bash local/gpu-seeder.sh
 
-# Teardown
+# Teardown (preserves volumes)
+docker compose -f local/docker-compose.yml down
+
+# Teardown and wipe all data
 docker compose -f local/docker-compose.yml down -v
 ```
 
-See `local/README.md` for full usage, commands, and topology diagram.
+**First boot note:** GPU container installs Docker + NVIDIA Container Toolkit on first boot (~90s). Subsequent boots reuse the `gpu-docker-data` volume (~15s). VPS startup takes 60-120s for inner dockerd to initialize against existing volume state.
 
-**First boot note:** GPU container installs Docker + NVIDIA Container Toolkit on first boot (~90s). Subsequent boots reuse the `gpu-docker-data` volume (~15s).
+#### DinD Platform Image Workflow
+
+GHCR carries no usable tag for local dev (`:latest` for platform-api is stale; `:local` doesn't exist remotely). Build locally and pipe into the inner VPS daemon:
+
+```bash
+# After any platform-api code change:
+cd /path/to/wopr-platform
+docker build -t ghcr.io/wopr-network/wopr-platform:local .
+docker save ghcr.io/wopr-network/wopr-platform:local | docker exec -i wopr-vps docker load
+docker exec wopr-vps docker restart wopr-vps-platform-api
+```
+
+#### DinD GPU Seeder
+
+The seeder (`local/gpu-seeder.sh`) resolves the `wopr-gpu` container IP, then runs psql **inside the inner postgres container** (the VPS DinD container has no psql client):
+
+```bash
+bash local/gpu-seeder.sh
+```
+
+After seeding, platform-api is automatically restarted. The InferenceWatchdog polls every 30s and updates `service_health` in `gpu_nodes`.
+
+To verify:
+```bash
+docker exec wopr-vps docker exec -e PGPASSWORD=wopr_local_dev wopr-vps-postgres \
+  psql -U wopr -d wopr_platform -c "SELECT id, host, status, service_health FROM gpu_nodes;"
+```
+
+#### DinD Gotchas (hard-won)
+
+- **`DO_API_TOKEN` required even for InferenceWatchdog** — `getDOClient()` is called from `getInferenceWatchdog()`, not just from the provisioner. Without it, platform-api crashes on startup. Set to any non-empty value for local dev (`local-dev-fake` is fine). The outer compose passes `DO_API_TOKEN=local-dev-fake` automatically.
+
+- **Platform images must be piped in via `docker save | docker load`** — the VPS inner daemon has no access to the host's image cache. Run the load command after every rebuild.
+
+- **GHCR auth inside DinD** — the outer VPS and GPU containers mount `~/.docker/config.json` read-only for pulling public images. For private GHCR images, run `docker login ghcr.io` inside the container: `docker exec wopr-vps docker login ghcr.io -u <user> -p <token>`.
+
+- **VPS workspace is read-only** — `local/vps/` is mounted `:ro` inside the container. To apply compose file changes without rebuilding the container, copy to `/tmp/vps/` inside the container and run compose from there.
+
+- **VPS dockerd startup timeout** — the startup script waits up to 120s for the inner dockerd. On warm restart with an existing `vps-docker-data` volume, this can take 90s+. Do not set the timeout below 120s.
+
+- **GPU entrypoint keep-alive** — use `tail -f /dev/null` to keep the container alive after the inner stack starts. `wait $DOCKERD_PID` caused a bash syntax error in the nvidia/cuda base image and caused the container to exit (taking port mappings 8080-8083 with it).
+
+- **`--flash-attn` requires a value** — newer llama.cpp requires `--flash-attn on|off|auto`. Passing `--flash-attn` bare is a parse error. Local dev uses `--flash-attn off`.
+
+- **CUDA passthrough in DinD is unsupported** — nested virtualization of GPU resources doesn't work (CUDA runtime version mismatch). GPU services run in CPU mode locally (`--n-gpu-layers 0`). This is slow for llama but functional for testing.
+
+- **psql inside DinD** — `docker:27-dind` has no psql client. Run psql inside the inner postgres container: `docker exec wopr-vps docker exec -e PGPASSWORD=... wopr-vps-postgres psql ...`
+
+- **WOP-1186: GPU cloud-init missing docker login** — production `gpu-cloud-init.ts` now includes `docker login` before `docker compose up`. PR #440 on wopr-platform. Without this, GPU node pulls hit Docker Hub anonymous rate limits (100 pulls/6h per IP).
+
+#### DinD Health Check Commands
+
+```bash
+# Outer containers
+docker ps --format "table {{.Names}}\t{{.Status}}" | grep wopr
+
+# VPS inner stack
+docker exec wopr-vps docker ps --format "table {{.Names}}\t{{.Status}}"
+
+# GPU inner stack
+docker exec wopr-gpu docker ps --format "table {{.Names}}\t{{.Status}}"
+
+# Platform API
+curl http://localhost:3100/health
+
+# GPU services
+curl http://localhost:8080/health  # llama-cpp
+curl http://localhost:8081/health  # chatterbox
+curl http://localhost:8082/health  # whisper
+curl http://localhost:8083/health  # qwen-embeddings
+
+# GPU node registration in DB
+docker exec wopr-vps docker exec -e PGPASSWORD=wopr_local_dev wopr-vps-postgres \
+  psql -U wopr -d wopr_platform -c "SELECT id, host, status, service_health FROM gpu_nodes;"
+```
 
 ### Approach B — Flat single-host compose (rapid iteration)
 
