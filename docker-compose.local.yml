@@ -22,6 +22,17 @@
 ## api.localhost and app.localhost are routed by Caddy — add to /etc/hosts or use
 ## direct ports if preferred.
 
+# VRAM PROFILES (RTX 3070 — 8 GB)
+# Run only the services you need. All four simultaneously exceed 8 GB.
+#
+#   Voice testing:  docker compose --profile voice up
+#     chatterbox (~5 GB) + whisper (~1 GB) = ~6 GB
+#
+#   LLM testing:    docker compose --profile llm up
+#     llama-cpp (~5 GB) + qwen (~1 GB) = ~6 GB
+#
+#   Full stack:     Not supported on 8 GB. Use --profile voice or --profile llm.
+
 x-gpu-common: &gpu-common
   deploy:
     resources:
@@ -195,6 +206,9 @@ services:
     restart: unless-stopped
     networks:
       - wopr-local
+    profiles:
+      - llm
+      - gpu
 
   # --- GPU: Qwen Embeddings ------------------------------------------------
   qwen-embeddings:
@@ -228,34 +242,38 @@ services:
     restart: unless-stopped
     networks:
       - wopr-local
+    profiles:
+      - llm
+      - gpu
 
   # --- GPU: Chatterbox TTS -------------------------------------------------
-  # TODO: Replace with travisvn/chatterbox-tts-api:v1.0.1 once confirmed to work
-  # on RTX 3070 (8 GB VRAM). The production image uses ~5 GB VRAM.
-  # Using faster-whisper-server as a port-compatible placeholder that passes
-  # health checks on :8081 while the real chatterbox image is validated.
-  # To switch: change the image and inner port from 8000 to 5123, and update
-  # the healthcheck URL accordingly.
+  # travisvn/chatterbox-tts-api:v1.0.1
+  # VRAM: ~5 GB on RTX 3070. Models are bundled in the image — no pre-download.
+  # Inner port: 5123. Health: GET /health (or GET / as fallback).
+  # TTS: POST /v1/audio/speech (OpenAI-compat, WOP-506) + POST /synthesize fallback.
+  # Voice cloning: mount .wav samples into /app/voices (optional).
   chatterbox:
     <<: *gpu-common
-    # PLACEHOLDER: swap this for travisvn/chatterbox-tts-api:v1.0.1 when ready
-    image: fedirz/faster-whisper-server:0.6.0-rc.3-cuda
+    image: travisvn/chatterbox-tts-api:v1.0.1
     container_name: wopr-local-chatterbox
     ports:
-      - "8081:8000"
+      - "8081:5123"
     environment:
-      # Placeholder config — whisper image, acting as chatterbox slot
-      WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-tiny}
-      WHISPER__INFERENCE_DEVICE: cuda
+      CHATTERBOX_DEVICE: cuda
+    volumes:
+      - ${CHATTERBOX_VOICES_PATH:-/opt/voices}:/app/voices:ro
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:5123/health || curl -sf http://localhost:5123/"]
       interval: 30s
       timeout: 10s
-      start_period: 120s
+      start_period: 180s
       retries: 3
     restart: unless-stopped
     networks:
       - wopr-local
+    profiles:
+      - voice
+      - gpu
 
   # --- GPU: Whisper STT ----------------------------------------------------
   whisper:
@@ -276,6 +294,9 @@ services:
     restart: unless-stopped
     networks:
       - wopr-local
+    profiles:
+      - voice
+      - gpu
 
   # --- GPU Seeder ----------------------------------------------------------
   # One-shot container: inserts a gpu_nodes row (if not exists) then POSTs
