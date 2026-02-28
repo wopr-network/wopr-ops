@@ -86,6 +86,7 @@ services:
         fi
         echo '==> Starting VPS compose stack...'
         cd /workspace/vps
+        set -a && . ./.env && set +a
         docker compose up -d
         echo '==> VPS stack started. Container will stay alive.'
         wait $$DOCKERD_PID
