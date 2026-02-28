@@ -176,7 +176,7 @@ services:
   # --- GPU: llama.cpp ------------------------------------------------------
   llama-cpp:
     <<: *gpu-common
-    image: ghcr.io/ggerganov/llama.cpp:server-cuda
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: wopr-local-llama-cpp
     ports:
       - "8080:8080"
@@ -213,7 +213,7 @@ services:
   # --- GPU: Qwen Embeddings ------------------------------------------------
   qwen-embeddings:
     <<: *gpu-common
-    image: ghcr.io/ggerganov/llama.cpp:server-cuda
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: wopr-local-qwen-embeddings
     ports:
       - "8083:8080"
