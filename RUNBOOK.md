@@ -6,7 +6,7 @@
 
 **Status:** PRE-PRODUCTION — not yet deployed to VPS
 **Last Updated:** 2026-02-28
-**Last Operation:** Local dev stack validated — VPS node + voice profile healthy; GPU node seeding pending
+**Last Operation:** GPU node seeding approach corrected — direct DB insert required; seeder and RUNBOOK updated
 
 ## Production Blockers (must resolve before go-live)
 
@@ -115,7 +115,7 @@ Files: `docker-compose.local.yml`, `Caddyfile.local`, `.env.local.example` (all 
 
 This stack simulates the full production topology on a single host with GPU pass-through. Two logical nodes run on one machine: a VPS node (postgres, platform-api, platform-ui, Caddy) and a GPU node (llama-cpp, qwen-embeddings, chatterbox, whisper). Both share the `wopr-local` Docker network so platform-api can reach GPU services by container name.
 
-**Last validated:** 2026-02-28. Full VPS node stack confirmed healthy. Voice GPU profile confirmed running. GPU node seeding not yet done — next step.
+**Last validated:** 2026-02-28. Full VPS node stack confirmed healthy. Voice GPU profile confirmed running. GPU node seeder updated to use direct DB insert (see seeding section).
 
 ### Current Running State (2026-02-28)
 
@@ -128,7 +128,7 @@ This stack simulates the full production topology on a single host with GPU pass
 | wopr-local-chatterbox | running | port 8081, `--profile voice` |
 | wopr-local-whisper | running | port 8082, `--profile voice` |
 
-GPU profile (`--profile llm`: llama-cpp port 8080, qwen-embeddings port 8083) not yet started. Next action: seed GPU node registration.
+GPU profile (`--profile llm`: llama-cpp port 8080, qwen-embeddings port 8083) not yet started. Run `gpu-seeder` then restart platform-api to register node.
 
 ### GPU Service Images (Validated — do not substitute)
 
@@ -223,20 +223,64 @@ To use Caddy subdomains by name, add to `/etc/hosts` (WSL2) or `C:\Windows\Syste
 
 ### Seeding the GPU node registration
 
-Production GPU nodes self-register via cloud-init by POSTing to `/internal/gpu/register`. In local dev, run the seeder manually after the stack is healthy:
+**How it works (and why direct DB insert is required):**
+
+Production GPU nodes self-register via cloud-init: `GpuNodeProvisioner.provision()` calls the DO API and INSERTs the row, then cloud-init POSTs to `/internal/gpu/register` to advance the `provision_stage`. In local dev, `GpuNodeProvisioner` is unavailable (no real droplet), and `/internal/gpu/register` can only UPDATE an existing row — it cannot INSERT a new one. The correct local dev approach is to INSERT the row directly into postgres.
+
+**Using the compose seeder (recommended):**
 
 ```bash
 docker compose -f docker-compose.local.yml --env-file .env.local \
   run --rm gpu-seeder
 ```
 
-This does two things:
-1. Upserts a row in `gpu_nodes` with `host=llama-cpp` (the container name the InferenceWatchdog polls)
-2. POSTs `POST /internal/gpu/register?stage=done` with the GPU_NODE_SECRET to mark the node active
+The seeder is a one-shot postgres:16-alpine container that inserts (or upserts) the `gpu_nodes` row directly. It depends only on `postgres` being healthy — not on `platform-api`. It is idempotent and safe to re-run.
 
-The seeder is idempotent — safe to re-run. The `GPU_NODE_ID` in `.env.local` is the stable node identity.
+After the seeder exits, restart platform-api so the InferenceWatchdog picks up the new row on its next 30s poll:
 
-**Status:** GPU node seeding not yet done as of 2026-02-28. This is the next step.
+```bash
+docker compose -f docker-compose.local.yml --env-file .env.local restart platform-api
+```
+
+**Manual equivalent (if needed outside compose):**
+
+```bash
+docker exec wopr-ops-postgres-1 psql -U wopr -d wopr_platform -c "
+INSERT INTO gpu_nodes (id, host, region, size, status, provision_stage, service_health, monthly_cost_cents)
+VALUES (
+  'local-gpu-node-001',
+  'host.docker.internal',
+  'local',
+  'rtx-3070',
+  'active',
+  'done',
+  '{\"llama\":true,\"chatterbox\":true,\"whisper\":true,\"qwen\":true}',
+  0
+) ON CONFLICT (id) DO UPDATE SET
+  host = 'host.docker.internal',
+  status = 'active',
+  provision_stage = 'done',
+  service_health = '{\"llama\":true,\"chatterbox\":true,\"whisper\":true,\"qwen\":true}',
+  updated_at = EXTRACT(epoch FROM now())::bigint;
+"
+```
+
+**Verification:**
+
+```bash
+# Confirm row is present
+docker exec wopr-ops-postgres-1 psql -U wopr -d wopr_platform -c \
+  "SELECT id, host, status, service_health FROM gpu_nodes;"
+
+# Then restart platform-api
+docker compose -f docker-compose.local.yml --env-file .env.local restart platform-api
+```
+
+Expected `service_health` after InferenceWatchdog runs (voice profile, no llm profile):
+- `chatterbox`: ok, `whisper`: ok
+- `llama`: down, `qwen`: down (not running on voice-only profile — expected)
+
+The `GPU_NODE_ID` in `.env.local` is the stable node identity — must match across runs.
 
 ### Health checks
 
@@ -255,7 +299,7 @@ curl http://localhost:8083/health           # qwen-embeddings (llm profile)
 |------|-----------|-----------|
 | TLS | Caddy DNS-01 via Cloudflare, HTTPS everywhere | Plain HTTP, no TLS |
 | Domain | `wopr.bot`, `api.wopr.bot` | `localhost`, `api.localhost` |
-| GPU node | Separate DO droplet, cloud-init self-registration | Same host, manual seeder (not yet run) |
+| GPU node | Separate DO droplet, cloud-init self-registration | Same host, direct DB insert via gpu-seeder |
 | GPU node reboot | InferenceWatchdog reboots DO droplet | Watchdog runs but reboot fails (no droplet) — harmless |
 | BETTER_AUTH_URL | `https://api.wopr.bot` | `http://localhost:3100` |
 | COOKIE_DOMAIN | `.wopr.bot` | `localhost` |

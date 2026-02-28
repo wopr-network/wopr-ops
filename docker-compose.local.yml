@@ -310,18 +310,23 @@ services:
       - gpu
 
   # --- GPU Seeder ----------------------------------------------------------
-  # One-shot container: inserts a gpu_nodes row (if not exists) then POSTs
-  # /internal/gpu/register?stage=done to mark the node active.
-  # Replaces the cloud-init self-registration flow that runs on real DO droplets.
+  # One-shot container: inserts (or updates) a gpu_nodes row directly in
+  # postgres with status=active and provision_stage=done.
+  #
+  # WHY direct DB insert (not /internal/gpu/register):
+  #   The /internal/gpu/register endpoint only UPDATEs an existing row — it
+  #   cannot INSERT a new one. Row insertion is normally done by
+  #   GpuNodeProvisioner.provision() which calls the DO API, unavailable in
+  #   local dev. Direct DB insert is the correct local dev approach.
   #
   # Run manually after the stack is up and healthy:
   #   docker compose -f docker-compose.local.yml --env-file .env.local \
   #     run --rm gpu-seeder
   #
-  # NODE_ID must match across runs — it is the stable identity of this local
-  # GPU node in the database.
+  # GPU_NODE_ID must match across runs — it is the stable identity of this
+  # local GPU node in the database.
   #
-  # GPU_NODE_HOST controls what host the InferenceWatchdog polls for health checks.
+  # GPU_NODE_HOST controls what host the InferenceWatchdog polls for health.
   # Two modes:
   #   - Compose GPU services (default for full compose stack):
   #       GPU_NODE_HOST=llama-cpp   (service name, reachable on wopr-local network)
@@ -329,54 +334,40 @@ services:
   #       GPU_NODE_HOST=host.docker.internal  (reaches host-bound ports 8080-8083)
   #
   # The .env.local default is host.docker.internal for the standalone GPU case.
+  # After seeding, restart platform-api so InferenceWatchdog picks up the new
+  # row on its next 30s poll cycle.
   gpu-seeder:
     image: postgres:16-alpine
     depends_on:
-      platform-api:
+      postgres:
         condition: service_healthy
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD}
-      GPU_NODE_SECRET: ${GPU_NODE_SECRET}
       GPU_NODE_ID: ${GPU_NODE_ID:-local-gpu-node-001}
       GPU_NODE_HOST: ${GPU_NODE_HOST:-host.docker.internal}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     entrypoint: >
       sh -c '
         set -e
-        echo "==> Seeding GPU node row in database (host=${GPU_NODE_HOST:-host.docker.internal})..."
+        echo "==> Seeding GPU node row directly in postgres (host=${GPU_NODE_HOST:-host.docker.internal})..."
         psql -h postgres -U wopr -d wopr_platform -c "
-          INSERT INTO gpu_nodes (id, region, size, status, provision_stage, created_at, updated_at, host)
+          INSERT INTO gpu_nodes (id, host, region, size, status, provision_stage, service_health, monthly_cost_cents)
           VALUES (
             '"'"'${GPU_NODE_ID:-local-gpu-node-001}'"'"',
+            '"'"'${GPU_NODE_HOST:-host.docker.internal}'"'"',
             '"'"'local'"'"',
-            '"'"'local-rtx3070'"'"',
-            '"'"'provisioning'"'"',
-            '"'"'registering'"'"',
-            EXTRACT(EPOCH FROM NOW())::bigint,
-            EXTRACT(EPOCH FROM NOW())::bigint,
-            '"'"'${GPU_NODE_HOST:-host.docker.internal}'"'"'
+            '"'"'rtx-3070'"'"',
+            '"'"'active'"'"',
+            '"'"'done'"'"',
+            '"'"'{\"llama\":true,\"chatterbox\":true,\"whisper\":true,\"qwen\":true}'"'"',
+            0
           )
           ON CONFLICT (id) DO UPDATE SET
-            host = EXCLUDED.host,
-            updated_at = EXTRACT(EPOCH FROM NOW())::bigint;
-        " && echo "Row upserted."
-
-        echo "==> Registering GPU node via platform-api..."
-        apk add --no-cache curl -q
-        RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-          "http://platform-api:3100/internal/gpu/register?stage=done" \
-          -H "Authorization: Bearer ${GPU_NODE_SECRET}" \
-          -H "Content-Type: application/json" \
-          -d "{\"nodeId\":\"${GPU_NODE_ID:-local-gpu-node-001}\"}")
-        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-        BODY=$(echo "$RESPONSE" | head -1)
-        echo "Response: $BODY (HTTP $HTTP_CODE)"
-        if [ "$HTTP_CODE" != "200" ]; then
-          echo "ERROR: Registration failed with HTTP $HTTP_CODE"
-          exit 1
-        fi
-        echo "==> GPU node registered and active."
+            host             = EXCLUDED.host,
+            status           = '"'"'active'"'"',
+            provision_stage  = '"'"'done'"'"',
+            service_health   = '"'"'{\"llama\":true,\"chatterbox\":true,\"whisper\":true,\"qwen\":true}'"'"',
+            updated_at       = EXTRACT(EPOCH FROM NOW())::bigint;
+        " && echo "==> GPU node row upserted. Restart platform-api to let InferenceWatchdog pick it up."
       '
     networks:
       - wopr-local
