@@ -52,6 +52,8 @@ services:
     environment:
       DOCKER_TLS_CERTDIR: ""
       DO_API_TOKEN: ${DO_API_TOKEN:-local-dev-fake}
+      REGISTRY_USERNAME: ${REGISTRY_USERNAME:-}
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD:-}
     volumes:
       - ./vps:/workspace/vps:ro
       - vps-docker-data:/var/lib/docker
@@ -75,7 +77,13 @@ services:
             exit 1
           fi
         done
-        echo '==> Docker daemon ready. Starting VPS compose stack...'
+        echo '==> Docker daemon ready.'
+        if [ -n "$$REGISTRY_USERNAME" ] && [ -n "$$REGISTRY_PASSWORD" ]; then
+          echo "==> Logging in to GHCR as $$REGISTRY_USERNAME..."
+          echo "$$REGISTRY_PASSWORD" | docker login ghcr.io -u "$$REGISTRY_USERNAME" --password-stdin
+          echo "$$REGISTRY_PASSWORD" | docker login -u "$$REGISTRY_USERNAME" --password-stdin
+        fi
+        echo '==> Starting VPS compose stack...'
         cd /workspace/vps
         docker compose up -d
         echo '==> VPS stack started. Container will stay alive.'

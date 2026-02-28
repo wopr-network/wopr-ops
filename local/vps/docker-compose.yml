@@ -59,7 +59,7 @@ services:
   # Platform API
   # ---------------------------------------------------------------------------
   platform-api:
-    image: ${PLATFORM_API_IMAGE:-ghcr.io/wopr-network/wopr-platform:local}
+    image: ${PLATFORM_API_IMAGE:-ghcr.io/wopr-network/wopr-platform:latest}
     container_name: wopr-vps-platform-api
     # extra_hosts maps wopr-gpu to the host gateway so inner containers can
     # resolve and reach the outer wopr-gpu container on wopr-dev.
@@ -116,7 +116,7 @@ services:
   # Platform UI
   # ---------------------------------------------------------------------------
   platform-ui:
-    image: ${PLATFORM_UI_IMAGE:-ghcr.io/wopr-network/wopr-platform-ui:local}
+    image: ${PLATFORM_UI_IMAGE:-ghcr.io/wopr-network/wopr-platform-ui:staging}
     container_name: wopr-vps-platform-ui
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:3100
@@ -128,6 +128,36 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    restart: unless-stopped
+    networks:
+      - wopr-vps-local
+
+  # ---------------------------------------------------------------------------
+  # Watchtower — polls GHCR for new image digests, pulls and restarts
+  # platform-api and platform-ui automatically after every CI push.
+  #
+  # platform-api: tracks :latest (pushed by deploy-production.yml on merge to main)
+  # platform-ui:  tracks :staging (no :latest tag exists — promote-production.yml
+  #               is manual. File a story to add push→main→:latest for parity.)
+  #
+  # Poll interval: 60s. After a merge, CI builds + pushes in ~3 min.
+  # Watchtower detects the new digest within 60s and restarts the service.
+  # Total lag: ~4 min. Zero manual steps.
+  # ---------------------------------------------------------------------------
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: wopr-vps-watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_POLL_INTERVAL: ${WATCHTOWER_POLL_INTERVAL:-60}
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_INCLUDE_RESTARTING: "true"
+      WATCHTOWER_NOTIFICATIONS_LEVEL: info
+      REPO_USER: ${REGISTRY_USERNAME:-}
+      REPO_PASS: ${REGISTRY_PASSWORD:-}
+    # Only watch the platform services — not postgres, caddy, or itself
+    command: wopr-vps-platform-api wopr-vps-platform-ui
     restart: unless-stopped
     networks:
       - wopr-vps-local
