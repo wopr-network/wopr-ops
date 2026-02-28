@@ -91,6 +91,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Authenticate with registries before pulling images
+# Prevents Docker Hub rate limits and GHCR auth failures (WOP-1186)
+# ---------------------------------------------------------------------------
+echo "==> Authenticating with Docker registries..."
+if [ -n "${REGISTRY_PASSWORD}" ] && [ -n "${REGISTRY_USERNAME}" ]; then
+  echo "${REGISTRY_PASSWORD}" | docker login ghcr.io -u "${REGISTRY_USERNAME}" --password-stdin
+  echo "${REGISTRY_PASSWORD}" | docker login -u "${REGISTRY_USERNAME}" --password-stdin
+  echo "==> Registry auth done."
+else
+  echo "WARNING: REGISTRY_USERNAME/REGISTRY_PASSWORD not set — pulls may hit rate limits"
+fi
+
+# ---------------------------------------------------------------------------
 # Start the GPU compose stack
 # ---------------------------------------------------------------------------
 echo "==> Starting GPU compose stack..."
