@@ -11,20 +11,18 @@
 #   http://localhost:3000     → platform-ui (direct, bypasses Caddy)
 
 {
-	# Disable automatic HTTPS — local dev uses plain HTTP
 	auto_https off
 }
 
-# Root and app subdomain → platform-ui
-localhost {
+# Explicit http:// scheme forces plain HTTP on port 80
+http://localhost {
 	reverse_proxy platform-ui:3000
 }
 
-app.localhost {
+http://app.localhost {
 	reverse_proxy platform-ui:3000
 }
 
-# API subdomain → platform-api
-api.localhost {
+http://api.localhost {
 	reverse_proxy platform-api:3100
 }
