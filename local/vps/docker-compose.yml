@@ -149,14 +149,12 @@ services:
     container_name: wopr-vps-watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /root/.docker/config.json:/config.json:ro
+      - /root/.docker:/config:ro
     environment:
       WATCHTOWER_POLL_INTERVAL: ${WATCHTOWER_POLL_INTERVAL:-60}
       WATCHTOWER_CLEANUP: "true"
       WATCHTOWER_INCLUDE_RESTARTING: "true"
       WATCHTOWER_NOTIFICATIONS_LEVEL: info
-      REPO_USER: ${REGISTRY_USERNAME:-}
-      REPO_PASS: ${REGISTRY_PASSWORD:-}
     # Only watch the platform services — not postgres, caddy, or itself
     command: wopr-vps-platform-api wopr-vps-platform-ui
     restart: unless-stopped
