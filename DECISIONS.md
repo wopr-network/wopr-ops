@@ -38,6 +38,14 @@ Running docker-compose inside a DinD container (docker:27-dind) has several trap
 
 6. **`local/vps/.env` is gitignored and must be recreated after fresh clone** — source values from `~/wopr-platform/.env` on the host. The `.env.example` documents every required variable.
 
+## 2026-03-01 — Caddy LAN access: catch-all block required
+
+Caddy named site blocks match the `Host` header exactly. `http://localhost` only serves requests where `Host: localhost`. LAN access from another machine sends `Host: 192.168.1.239` — Caddy finds no match and returns empty 200 (content-length 0), which looks like a blank page. Fix: add `http://` catch-all block after the named sites.
+
+Also: `caddy reload` does not re-read bind-mounted files — it reloads from the running process state. After editing a bind-mounted Caddyfile, `docker restart` is required.
+
+Diagnosis tip: `Content-Length: 0` + HTTP 200 = Caddy no-match. A real upstream failure returns 502/504.
+
 ## 2026-02-28 — GPU node separate from bot fleet
 
 GPU nodes are shared infrastructure with no per-tenant capacity. They have different health semantics (inference endpoints vs WebSocket self-registration). Sharing the node state machine would conflate unrelated concerns (see GPU Inference Infrastructure design doc in Linear).

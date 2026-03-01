@@ -19,6 +19,11 @@ http://localhost {
 	reverse_proxy platform-ui:3000
 }
 
+# Catch-all: any IP/hostname (LAN access from other machines)
+http:// {
+	reverse_proxy platform-ui:3000
+}
+
 http://app.localhost {
 	reverse_proxy platform-ui:3000
 }
