@@ -122,6 +122,8 @@ services:
       NEXT_PUBLIC_API_URL: http://localhost:3100
       BETTER_AUTH_URL: http://localhost:3100
       NEXT_PUBLIC_APP_DOMAIN: localhost
+      NODE_ENV: development
+      PLAYWRIGHT_TESTING: "true"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
       interval: 15s

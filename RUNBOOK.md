@@ -5,8 +5,8 @@
 ## Current State
 
 **Status:** PRE-PRODUCTION — not yet deployed to VPS
-**Last Updated:** 2026-02-28
-**Last Operation:** DinD local dev environment stabilized and fully verified (2026-02-28)
+**Last Updated:** 2026-03-05
+**Last Operation:** DinD local dev environment restarted on WSL2 after Docker Desktop restoration (2026-03-05). Resolved: credential helper path, platform-ui:local build + push, PLAYWRIGHT_TESTING bypass. All 5 inner VPS services healthy.
 
 ## Production Blockers (must resolve before go-live)
 
@@ -135,24 +135,48 @@ Watchtower inside the VPS inner stack polls GHCR every 60s. When it sees a new d
 # 1. Clone wopr-ops if missing (never use /tmp — wiped on WSL restart)
 git clone https://github.com/wopr-network/wopr-ops.git ~/wopr-ops
 
-# 2. Create local/vps/.env from ~/wopr-platform/.env on the host
+# 2. Create local/vps/.env from ~/wopr-platform-backend/.env on the host
 #    (gitignored — must recreate after fresh clone)
-grep -v '^#' ~/wopr-platform/.env | grep -v '^$' | \
+grep -v '^#' ~/wopr-platform-backend/.env | grep -v '^$' | \
   grep -v 'DOMAIN=' | grep -v '_DB_PATH=' | grep -v 'METER_' | \
   grep -v 'SNAPSHOT_' | grep -v 'TENANT_KEYS_' > ~/wopr-ops/local/vps/.env
 echo "POSTGRES_PASSWORD=wopr_local_dev" >> ~/wopr-ops/local/vps/.env
 echo "GPU_NODE_SECRET=wopr_local_gpu_secret" >> ~/wopr-ops/local/vps/.env
 echo "COOKIE_DOMAIN=localhost" >> ~/wopr-ops/local/vps/.env
 
-# 3. Start the stack
-docker compose -f ~/wopr-ops/local/docker-compose.yml up -d
+# 3. Start the VPS container only (GPU requires NVIDIA — skip on WSL2 without GPU)
+export PATH="$PATH:/mnt/c/Program Files/Docker/Docker/resources/bin"
+docker compose -f ~/wopr-ops/local/docker-compose.yml up -d vps
 
-# 4. VPS boots, logs in to GHCR, pulls images, starts inner stack (~2 min first boot)
-docker logs -f wopr-vps   # watch for "==> VPS stack started."
+# 4. Wait for VPS inner daemon (~30s). VPS entrypoint will fail to pull (credential helper
+#    not in DinD PATH). Proceed to manual pull steps below.
+docker logs -f wopr-vps   # watch for "==> VPS stack started." then Ctrl-C
 
-# 5. Seed GPU node registration (run after both containers are healthy)
+# 5. Set up GHCR auth inside the container (ephemeral — repeat after each container restart)
+REGISTRY_PASSWORD=$(grep REGISTRY_PASSWORD ~/wopr-ops/local/vps/.env | cut -d= -f2-)
+AUTH=$(printf 'tsavo:%s' "$REGISTRY_PASSWORD" | base64 -w 0)
+docker exec wopr-vps /bin/sh -c "mkdir -p /tmp/dockercfg && printf '{\"auths\":{\"ghcr.io\":{\"auth\":\"%s\"}}}' '$AUTH' > /tmp/dockercfg/config.json"
+
+# 6. Pull inner images (platform-api, platform-ui, caddy, postgres, watchtower)
+docker exec wopr-vps /bin/sh -c 'cd /workspace/vps && set -a && . ./.env && set +a && DOCKER_CONFIG=/tmp/dockercfg docker compose pull'
+
+# 7. Build platform-ui:local and push to GHCR (required because :local uses standalone output
+#    and PLAYWRIGHT_TESTING bypass — only exists if built from fix/wop-1187-local-image config)
+cd ~/wopr-platform-ui
+git checkout origin/fix/wop-1187-local-image -- next.config.ts
+docker build --build-arg NEXT_PUBLIC_API_URL=http://localhost:3100 -t ghcr.io/wopr-network/wopr-platform-ui:local .
+git restore next.config.ts
+docker push ghcr.io/wopr-network/wopr-platform-ui:local
+docker exec wopr-vps /bin/sh -c 'DOCKER_CONFIG=/tmp/dockercfg docker pull ghcr.io/wopr-network/wopr-platform-ui:local'
+
+# 8. Start inner stack
+docker exec wopr-vps /bin/sh -c 'cd /workspace/vps && set -a && . ./.env && set +a && DOCKER_CONFIG=/tmp/dockercfg docker compose up -d'
+
+# 9. Seed GPU node registration (optional — only needed if testing GPU/inference features)
 bash ~/wopr-ops/local/gpu-seeder.sh
 ```
+
+**Note:** `local/vps/docker-compose.yml` must have `PLAYWRIGHT_TESTING: "true"` under `platform-ui.environment` to bypass the localhost URL validation at SSR runtime (see DinD gotchas). This is already in the committed file as of 2026-03-05.
 
 #### Normal usage (stack already running)
 
@@ -221,6 +245,16 @@ docker exec wopr-vps docker exec -e PGPASSWORD=wopr_local_dev wopr-vps-postgres 
 - **psql inside DinD** — `docker:27-dind` has no psql client. Run psql inside the inner postgres container: `docker exec wopr-vps docker exec -e PGPASSWORD=... wopr-vps-postgres psql ...`
 
 - **WOP-1186: GPU cloud-init missing docker login** — production `gpu-cloud-init.ts` now includes `docker login` before `docker compose up`. PR #440 on wopr-platform. Without this, GPU node pulls hit Docker Hub anonymous rate limits (100 pulls/6h per IP).
+
+- **`docker-credential-desktop.exe` not in WSL PATH** — Docker Desktop WSL integration mounts `~/.docker/config.json` with `"credsStore": "desktop.exe"`. The inner VPS DinD daemon sees this file but `docker-credential-desktop.exe` is not in its PATH. Workaround: before pulling inside the container, create a plain-auth config at `/tmp/dockercfg/config.json` and prefix commands with `DOCKER_CONFIG=/tmp/dockercfg`. To set it up: `REGISTRY_PASSWORD=$(grep REGISTRY_PASSWORD ~/wopr-ops/local/vps/.env | cut -d= -f2-) && AUTH=$(printf 'tsavo:%s' "$REGISTRY_PASSWORD" | base64 -w 0) && docker exec wopr-vps /bin/sh -c "mkdir -p /tmp/dockercfg && printf '{\"auths\":{\"ghcr.io\":{\"auth\":\"%s\"}}}' '$AUTH' > /tmp/dockercfg/config.json"`. Then pull: `docker exec wopr-vps /bin/sh -c 'DOCKER_CONFIG=/tmp/dockercfg docker pull <image>'`. **This `/tmp/dockercfg` is ephemeral** — recreate after every container restart.
+
+- **`docker save | docker exec -i` fails in WSL with Docker Desktop** — piping `docker save` output into `docker exec -i` fails with `/usr/bin/env: 'sh': No such file or directory`. The Docker Desktop CLI intercepts stdin in a way that breaks piped exec. Workaround: save to a tar file on the host, then use `docker cp` — but `docker cp` also silently fails for files in `/tmp`. Use `~/` instead: `docker save <image> -o ~/image.tar && docker cp ~/image.tar wopr-vps:/tmp/image.tar && docker exec wopr-vps docker load -i /tmp/image.tar`. If `docker cp` still fails, push the image to GHCR and pull from inside the container.
+
+- **`platform-ui:local` requires building from `fix/wop-1187-local-image` branch** — `main` does not have `output: "standalone"` in `next.config.ts` but the Dockerfile copies `.next/standalone`. Build image by checking out `next.config.ts` from `origin/fix/wop-1187-local-image` before running `docker build`. Restore after build: `git restore next.config.ts`.
+
+- **`platform-ui` hostname validation in production mode** — `src/lib/api-config.ts` validates `NEXT_PUBLIC_API_URL` at SSR startup and throws if it contains `localhost` or an internal IP when `NODE_ENV=production`. Next.js Turbopack inlines `NODE_ENV` at build time, so setting `NODE_ENV=development` on the container at runtime does NOT bypass it. Use `PLAYWRIGHT_TESTING=true` as the runtime bypass env var. Add to `local/vps/docker-compose.yml` under `platform-ui.environment`.
+
+- **`platform-ui` default image on inner compose is `:local`** — GHCR carries `:latest` (stale staging build) and `:local` (built from `fix/wop-1187-local-image`). Build locally, push to GHCR as `:local`, then pull inside the container. Alternatively, build locally, push with `docker push ghcr.io/wopr-network/wopr-platform-ui:local`, then `DOCKER_CONFIG=/tmp/dockercfg docker pull ghcr.io/wopr-network/wopr-platform-ui:local` inside the container.
 
 #### DinD Health Check Commands
 
