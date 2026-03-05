@@ -104,12 +104,14 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    environment:
+      REGISTRY_USERNAME: ${REGISTRY_USERNAME:-}
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD:-}
     volumes:
       - ./gpu:/workspace/gpu:ro
       - /opt/models:/opt/models:ro
       - /opt/voices:/opt/voices:ro
       - gpu-docker-data:/var/lib/docker
-      - /home/tsavo/.docker/config.json:/root/.docker/config.json:ro
     networks:
       - wopr-dev
     ports:

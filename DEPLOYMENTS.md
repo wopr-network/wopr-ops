@@ -45,4 +45,29 @@
 4. `platform-ui` Dockerfile requires `output: "standalone"` in `next.config.ts` which is only on `fix/wop-1187-local-image` branch — cherry-picked `next.config.ts` for build, restored after
 5. `docker save | docker exec -i` piping fails in Docker Desktop WSL — worked around by pushing to GHCR and pulling from inside container
 
-**Notes:** GPU container not started — no NVIDIA GPU in this WSL2 environment. VPS-only stack sufficient for platform development.
+**Notes:** GPU container not started — nvidia-smi was not in PATH; GPU confirmed absent at time of initial stack start. GPU started in subsequent operation (see entry below).
+
+---
+
+### 2026-03-05 01:55 UTC — GPU container started (RTX 3070, CUDA 13.0)
+
+**Repos:** wopr-network/wopr-ops (gpu-seeder.sh)
+**Images deployed (inner GPU stack):**
+- `ghcr.io/ggml-org/llama.cpp:server-cuda` — llama-cpp port 8080
+- `travisvn/chatterbox-tts-api:gpu` — chatterbox port 8081
+- `fedirz/faster-whisper-server:0.6.0-rc.3-cuda` — whisper port 8082
+- `ghcr.io/ggml-org/llama.cpp:server-cuda` — qwen-embeddings port 8083
+
+**GPU:** NVIDIA RTX 3070 8GB, driver 581.08 (Windows), CUDA 13.0, WSL2
+
+**Result:** Success
+- `wopr-gpu-llama-cpp`: healthy — `curl http://localhost:8080/health` → `{"status":"ok"}`
+- `wopr-gpu-chatterbox`: healthy — `curl http://localhost:8081/health` → `OK`
+- `wopr-gpu-whisper`: health: starting (within start_period) — endpoint responding
+- `wopr-gpu-qwen-embeddings`: healthy — `curl http://localhost:8083/health` → `{"status":"ok"}`
+- GPU node seeded: `local-gpu-node-001` at `172.22.0.3`
+- InferenceWatchdog DB: `service_health = {"llama":"ok","qwen":"ok","chatterbox":"ok","whisper":"ok"}`
+
+**Rollback needed:** No
+
+**Notes:** First boot installed Docker + NVIDIA Container Toolkit inside the DinD container (~90s). Large CUDA image layers (1–1.4 GB each) produced containerd layer-lock error spam in logs — normal, resolved on completion. nvidia-smi is at `/usr/lib/wsl/lib/nvidia-smi`, not in PATH. GPU container was already running from prior outer compose up attempt; just needed time to complete pulls.

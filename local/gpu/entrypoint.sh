@@ -91,16 +91,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Set up a clean Docker config without the broken Windows credential helper.
+# The host ~/.docker/config.json mounted at /root/.docker/config.json may
+# reference docker-credential-desktop.exe which is not available inside the
+# container. Override DOCKER_CONFIG to point at a clean config we control.
+# ---------------------------------------------------------------------------
+mkdir -p /tmp/dockercfg
+export DOCKER_CONFIG=/tmp/dockercfg
+
 # Authenticate with registries before pulling images
 # Prevents Docker Hub rate limits and GHCR auth failures (WOP-1186)
-# ---------------------------------------------------------------------------
 echo "==> Authenticating with Docker registries..."
 if [ -n "${REGISTRY_PASSWORD}" ] && [ -n "${REGISTRY_USERNAME}" ]; then
-  echo "${REGISTRY_PASSWORD}" | docker login ghcr.io -u "${REGISTRY_USERNAME}" --password-stdin
-  echo "${REGISTRY_PASSWORD}" | docker login -u "${REGISTRY_USERNAME}" --password-stdin
-  echo "==> Registry auth done."
+  AUTH=$(printf '%s:%s' "${REGISTRY_USERNAME}" "${REGISTRY_PASSWORD}" | base64 | tr -d '\n')
+  # Only write GHCR credentials. Docker Hub images (chatterbox, whisper) are public
+  # and should be pulled anonymously — the GitHub PAT is not a valid Docker Hub credential.
+  printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$AUTH" > /tmp/dockercfg/config.json
+  echo "==> GHCR auth written to /tmp/dockercfg/config.json."
 else
-  echo "WARNING: REGISTRY_USERNAME/REGISTRY_PASSWORD not set — pulls may hit rate limits"
+  printf '{}' > /tmp/dockercfg/config.json
+  echo "WARNING: REGISTRY_USERNAME/REGISTRY_PASSWORD not set — pulling GHCR images may fail"
 fi
 
 # ---------------------------------------------------------------------------

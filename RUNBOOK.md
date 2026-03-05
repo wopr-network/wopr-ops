@@ -6,7 +6,7 @@
 
 **Status:** PRE-PRODUCTION — not yet deployed to VPS
 **Last Updated:** 2026-03-05
-**Last Operation:** DinD local dev environment restarted on WSL2 after Docker Desktop restoration (2026-03-05). Resolved: credential helper path, platform-ui:local build + push, PLAYWRIGHT_TESTING bypass. All 5 inner VPS services healthy.
+**Last Operation:** Full DinD local dev stack online — VPS + GPU containers both healthy (2026-03-05). GPU: RTX 3070 8GB, CUDA 13.0. All 9 services healthy. GPU seeded — InferenceWatchdog confirmed llama, qwen, chatterbox, whisper all ok.
 
 ## Production Blockers (must resolve before go-live)
 
@@ -225,6 +225,10 @@ docker exec wopr-vps docker exec -e PGPASSWORD=wopr_local_dev wopr-vps-postgres 
 ```
 
 #### DinD Gotchas (hard-won)
+
+- **`nvidia-smi` is at `/usr/lib/wsl/lib/nvidia-smi` on this WSL2 host** — not in PATH by default. Confirmed GPU: RTX 3070 8GB, driver 581.08, CUDA 13.0. Docker has `nvidia` runtime registered (`docker info | grep -i nvidia`). Device nodes `/dev/nvidia*` are not pre-created but the NVIDIA Container Toolkit creates them on demand. GPU container starts fine without them.
+
+- **Inner DinD GPU layer-lock errors are normal on first pull** — the containerd `(*service).Write failed ... locked for Xs` errors spam the log while a large layer (>1 GB) is being extracted. This is a DinD containerd concurrency issue and resolves itself. Do not restart the container. Wait; the pull completes and the stack starts. Subsequent boots use the `gpu-docker-data` volume and skip pulls entirely.
 
 - **`DO_API_TOKEN` required even for InferenceWatchdog** — `getDOClient()` is called from `getInferenceWatchdog()`, not just from the provisioner. Without it, platform-api crashes on startup. Set to any non-empty value for local dev (`local-dev-fake` is fine). The outer compose passes `DO_API_TOKEN=local-dev-fake` automatically.
 
