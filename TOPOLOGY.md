@@ -89,3 +89,33 @@ The GPU node is a separate DO droplet. `platform-api` reaches it via public IP u
 | Self-registration | Cloud-init POSTs to `POST /internal/gpu/register` on platform-api to signal boot stages |
 
 After GPU provisioning: update `GPU_NODE_HOST` in VPS `.env` and `--force-recreate` platform-api.
+
+## Time Synchronization
+
+All WOPR infrastructure uses a shared NTP source to ensure consistent timestamps across logs, event ordering, timeouts, and replay protection.
+
+| Layer | Mechanism |
+|-------|-----------|
+| Production VPS (DO) | `systemd-timesyncd` → Cloudflare NTS (`time.cloudflare.com`) |
+| Runner stack | `cturra/ntp` chrony container → runners sync on startup via `SYS_TIME` cap |
+| Local dev stack | `cturra/ntp` chrony container on `wopr-local` network |
+
+**Why this matters:** defcon and norad store all timestamps as Unix ms integers. If the host clock drifts (especially in WSL2 after sleep/wake), gate timeouts, event ordering, and replay-protection nonce windows all silently break.
+
+**Upstream NTP chain:**
+```
+time.cloudflare.com (NTS — authenticated)
+time.google.com     (fallback)
+pool.ntp.org        (fallback)
+  → wopr-ntp container (chrony, stratum 2)
+    → runner containers (sync at startup, SYS_TIME cap)
+    → app containers (share host kernel clock — already synced)
+```
+
+**Production VPS upgrade path:** swap `systemd-timesyncd` for `chrony` for faster convergence after network interruptions:
+```bash
+sudo apt install chrony
+sudo systemctl disable systemd-timesyncd
+sudo systemctl enable --now chronyd
+```
+

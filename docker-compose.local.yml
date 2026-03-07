@@ -66,6 +66,23 @@ volumes:
 # ---------------------------------------------------------------------------
 services:
 
+  # --- NTP (Chrony) -------------------------------------------------------
+  # Authoritative time source for all containers on the wopr-local network.
+  # Syncs from Cloudflare NTS + Google + pool.ntp.org upstream.
+  # All services get correct timestamps for logs, timeouts, event ordering.
+  ntp:
+    image: cturra/ntp:latest
+    container_name: wopr-local-ntp
+    restart: unless-stopped
+    cap_add:
+      - SYS_TIME
+      - SYS_NICE
+    environment:
+      - NTP_SERVERS=time.cloudflare.com,time.google.com,pool.ntp.org
+      - LOG_LEVEL=0
+    networks:
+      - wopr-local
+
   # --- Postgres -----------------------------------------------------------
   postgres:
     image: postgres:16-alpine
