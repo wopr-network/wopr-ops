@@ -71,3 +71,29 @@
 **Rollback needed:** No
 
 **Notes:** First boot installed Docker + NVIDIA Container Toolkit inside the DinD container (~90s). Large CUDA image layers (1–1.4 GB each) produced containerd layer-lock error spam in logs — normal, resolved on completion. nvidia-smi is at `/usr/lib/wsl/lib/nvidia-smi`, not in PATH. GPU container was already running from prior outer compose up attempt; just needed time to complete pulls.
+
+---
+
+## Paperclip Platform
+
+### 2026-03-12 — Paperclip Platform local testing stack committed (not yet tested)
+
+**Repos:** wopr-network/paperclip-platform (commit c0d1a6f on main)
+**Images:** `paperclip-managed:local` (built from ~/paperclip/Dockerfile.managed), `postgres:16-alpine`, `caddy:2-alpine`
+**Result:** Committed + pushed — not yet run end-to-end
+
+**What was added:**
+- `docker-compose.local.yml` — full local stack: Postgres + platform API (port 3200) + dashboard from platform-ui-core (port 3000) + Caddy (port 8080) + seed Paperclip container
+- `caddy/Caddyfile.local` — no-TLS local routing: `app.localhost:8080` → dashboard, `*.localhost:8080` → tenant proxy
+- `.env.local.example` — complete env template (Stripe test keys from ~/wopr-platform/.env, BetterAuth, branding)
+- `src/db/index.ts` + `src/db/migrate.ts` — Postgres pool + platform-core Drizzle migrations
+- `src/index.ts` — rewritten to wire BetterAuth, DrizzleCreditLedger, DrizzleUserRoleRepository, optional Stripe
+- `scripts/local-test.sh` — preflight checks, image build, compose up, health wait, access URLs
+
+**Stripe:** test-mode keys (`sk_test_*`) from `~/wopr-platform/.env`. Stripe SDK initialized when `STRIPE_SECRET_KEY` is set; webhook routes TBD.
+
+**Next steps:**
+1. Copy `.env.local.example` → `.env.local`, fill in Stripe test keys
+2. Build `paperclip-managed:local` image
+3. Run `bash scripts/local-test.sh` end-to-end
+4. Wire Stripe webhook + checkout flow routes

@@ -8,6 +8,9 @@
 | wopr-network/wopr-platform-ui | Next.js dashboard | ghcr.io/wopr-network/wopr-platform-ui |
 | wopr-network/wopr | WOPR bot core — one container per tenant | ghcr.io/wopr-network/wopr |
 | wopr-network/wopr-ops | This logbook | N/A |
+| wopr-network/paperclip-platform | Paperclip Hono API — fleet, billing, auth (white-label of wopr-platform) | TBD |
+| wopr-network/platform-ui-core | Brand-agnostic Next.js dashboard (shared by WOPR + Paperclip) | TBD |
+| wopr-network/paperclip | Paperclip managed bot — one container per tenant | TBD |
 
 ## CI/CD Pipeline
 
@@ -49,6 +52,57 @@ GPU Node (DigitalOcean — separate droplet, not yet provisioned)
        ├─ whisper      :8082
        └─ qwen         :8083
 ```
+
+## Paperclip Platform Architecture (runpaperclip.com)
+
+White-label deployment of the WOPR platform stack for Paperclip AI. Uses `@wopr-network/platform-core` for shared DB schema, auth, and billing logic.
+
+```
+Internet
+  └─ Cloudflare DNS
+       ├─ runpaperclip.com       → VPS IP (TBD)
+       ├─ app.runpaperclip.com   → VPS IP (dashboard)
+       └─ *.runpaperclip.com     → VPS IP (tenant subdomains)
+
+Production VPS (TBD)
+  └─ docker-compose.yml
+       ├─ caddy:2-alpine                (80, 443)
+       │    ├─ app.runpaperclip.com  → dashboard:3000
+       │    ├─ runpaperclip.com/api  → platform:3200
+       │    └─ *.runpaperclip.com    → platform:3200 (tenant proxy)
+       ├─ paperclip-platform         (3200 — internal)
+       │    └─ Docker socket → spawns tenant containers
+       ├─ platform-ui-core          (3000 — internal, .env.paperclip branding)
+       └─ postgres:16-alpine        (5432 — internal)
+
+Tenant Containers (dynamic, managed by paperclip-platform via Dockerode)
+  └─ paperclip-managed:latest
+       └─ one per tenant, named volume /data for persistence
+```
+
+### Paperclip Local Dev Stack
+
+Run from `~/paperclip-platform`:
+```bash
+cp .env.local.example .env.local   # fill in Stripe test keys from ~/wopr-platform/.env
+docker build -t paperclip-managed:local -f ~/paperclip/Dockerfile.managed ~/paperclip
+bash scripts/local-test.sh         # or: docker compose -f docker-compose.local.yml up --build
+```
+
+| Service | Port | URL |
+|---------|------|-----|
+| Dashboard | 8080 (via Caddy) | http://app.localhost:8080 |
+| API | 3200 | http://localhost:3200/health |
+| Tenant proxy | 8080 (via Caddy) | http://{subdomain}.localhost:8080 |
+| Postgres | 5433 (mapped) | localhost:5433 (paperclip/paperclip-local) |
+| Caddy admin | 2019 | http://localhost:2019 |
+
+### Shared Dependencies
+
+| Package | Used By | Purpose |
+|---------|---------|---------|
+| @wopr-network/platform-core | wopr-platform, paperclip-platform | DB schema, Drizzle migrations, BetterAuth, CreditLedger, UserRoleRepo |
+| platform-ui-core | wopr-platform-ui (brand shell), paperclip dashboard | Brand-agnostic Next.js UI, configured via NEXT_PUBLIC_BRAND_* env vars |
 
 ## Hard Constraints
 
