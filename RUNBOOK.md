@@ -590,10 +590,12 @@ The platform API (`src/index.ts`) runs this sequence in the serve callback:
 5. Run BetterAuth migrations
 6. Wire `DrizzleCreditLedger` → `setCreditLedger()` (billing gate)
 7. Wire `DrizzleUserRoleRepository` → `setUserRoleRepo()` (admin auth)
-8. Initialize Stripe SDK if `STRIPE_SECRET_KEY` is set (webhook routes TBD)
-9. Start ProxyManager → Caddy sync
-10. Hydrate routes from running Docker containers
-11. Start health monitor
+8. **Wire metered inference gateway** (`wireGateway()`) — mounts `/v1/*` routes, creates `MeterEmitter` + `BudgetChecker`, hydrates per-tenant service keys from fleet profiles
+9. Wire tRPC router dependencies (billing, settings, profile, page-context, org)
+10. Initialize Stripe SDK if `STRIPE_SECRET_KEY` is set (webhook routes TBD)
+11. Start ProxyManager → Caddy sync
+12. Hydrate routes from running Docker containers
+13. Start health monitor
 
 ### Health checks
 
@@ -612,6 +614,15 @@ curl http://localhost:2019/config/
 
 # Seed container
 docker compose -f docker-compose.local.yml logs seed
+
+# Inference gateway (requires a valid per-tenant service key)
+# Quick smoke test — should return 401 "Unauthorized" (no key)
+curl http://localhost:3200/v1/chat/completions
+# With a service key (obtained from createInstance response or fleet profile YAML):
+curl http://localhost:3200/v1/chat/completions \
+  -H "Authorization: Bearer <PAPERCLIP_GATEWAY_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"openrouter/auto","messages":[{"role":"user","content":"ping"}]}'
 ```
 
 ### Common operations
@@ -690,9 +701,18 @@ Chrome and Firefox resolve `*.localhost` to 127.0.0.1 automatically. No `/etc/ho
 - **`tsc -b` in UI build compiles server as project reference** — `Dockerfile.managed` builds the UI first (`pnpm --filter @paperclipai/ui build` which runs `tsc -b`), then the server. The UI's `tsc -b` compiles the server as a referenced project, producing `server/dist/`. The Dockerfile has `rm -rf server/dist` before the server build to ensure fresh compilation. Without this, the server's `tsc` sees the stale `server/dist/` and may skip recompilation.
 - **`CADDY_ADMIN_URL` must be empty in `.env.local`** — the platform's ProxyManager POSTs to Caddy's `/load` endpoint on startup, which overwrites the Caddyfile wildcard routing with a dynamic HTTPS config (port 443). This kills the HTTP port 8080 listener. The compose `environment:` block must NOT set `CADDY_ADMIN_URL` — let `.env.local`'s empty value take effect. If Caddy stops accepting connections on port 8080, this is probably why.
 - **Stale fleet profile YAML files** — fleet profiles are stored as YAML files in `/data/fleet/` inside the platform container. Failed or destroyed instances may leave stale profiles. When hitting "Instance limit reached" (max 5 per tenant), check for stale profiles: `docker exec paperclip-platform-platform-1 ls /data/fleet/`. Remove stale ones manually.
-- **Credit ledger blocks instance creation** — new users start with 0 credits. If `DATABASE_URL` is configured (which it is in the compose stack), the credit ledger is active and blocks provisioning with "Insufficient credits". Grant credits via SQL: `INSERT INTO credit_balances (tenant_id, balance_credits, last_updated) VALUES ('<tenant_id>', 10000, now()::text) ON CONFLICT (tenant_id) DO UPDATE SET balance_credits = 10000;`
+- **Credit ledger blocks instance creation** — new users start with 0 credits. If `DATABASE_URL` is configured (which it is in the compose stack), the credit ledger is active and blocks provisioning with "Insufficient credits". Grant credits via SQL (units are NANODOLLARS — 10B ≈ $10): `INSERT INTO credit_balances (tenant_id, balance_credits, last_updated) VALUES ('<tenant_id>', 10000000000, now()::text) ON CONFLICT (tenant_id) DO UPDATE SET balance_credits = 10000000000;`
 - **BetterAuth password hash format** — BetterAuth uses `{hexSalt}:{hexKey}` format (scrypt N=16384, r=16, p=1, dkLen=64 via `@noble/hashes`). NOT the `$s0$` format from Node's `scryptSync`. The provision adapter uses `hashPassword` from `better-auth/crypto` directly. Default password for provisioned admin users = their email address.
-- **No BYOK** — hosted Paperclip instances use the platform's metered inference gateway (`GATEWAY_API_KEY` in `.env.local`). Users don't bring their own API keys. The onboarding wizard's adapter/key configuration step is skipped entirely in hosted mode (`hostedMode: true` in health response → UI hides wizard).
+- **No BYOK** — hosted Paperclip instances use the platform's metered inference gateway. Users don't bring their own API keys. The onboarding wizard's adapter/key configuration step is skipped entirely in hosted mode (`hostedMode: true` in health response → UI hides wizard).
+- **`OPENROUTER_API_KEY` required for gateway** — without this env var, the gateway is silently disabled on startup (log: "OPENROUTER_API_KEY not set — inference gateway disabled"). No `/v1/*` routes will be mounted. Get a key at https://openrouter.ai/settings/keys.
+- **Per-tenant service keys, NOT shared `GATEWAY_API_KEY`** — each provisioned instance gets a unique gateway key (`PAPERCLIP_GATEWAY_KEY` in the container env). Generated by `generateServiceKey()` during `createInstance`, stored in the fleet profile YAML, hydrated into an in-memory SHA-256 hash map on startup. The old `GATEWAY_API_KEY` config var is unused. If a tenant container's gateway calls return 401, the key may not have been hydrated — restart the platform to re-hydrate from profiles.
+- **Gateway service keys are in-memory only** — the key→tenant map lives in process memory, populated from fleet profile YAML files on startup. If the platform process crashes and restarts, keys are re-hydrated automatically. But if a profile YAML is manually deleted or corrupted, that tenant's gateway access breaks until the instance is reprovisioned.
+- **`lru-cache` dependency required** — platform-core's `BudgetChecker` imports `lru-cache`. If missing from `paperclip-platform/package.json`, you get `Cannot find module 'lru-cache'` at startup. Already added; don't remove it.
+- **MeterEmitter WAL/DLQ paths** — the `MeterEmitter` writes WAL (write-ahead log) and DLQ (dead-letter queue) files. Paths are `${FLEET_DATA_DIR}/meter-wal` and `${FLEET_DATA_DIR}/meter-dlq`. If the container user lacks write access to these paths, startup fails with `EACCES: permission denied, mkdir './data'`. The docker-compose volume must map `/data/fleet` to a writable host directory.
+- **Credit units are nanodollars** — `credit_balances.balance_credits` is in raw nanodollar units. 1,000,000 raw = 0.1 cents. 10,000,000,000 raw ≈ $10. When granting credits for testing, use `10000000000` (10 billion) for ~$10, not `10000`.
+- **`removeServiceKeys()` on destroy** — when an instance is destroyed via `fleet.controlInstance`, its service keys are removed from the in-memory map. The tenant's gateway calls will immediately start returning 401. This is intentional.
+- **Free OpenRouter models** — `openrouter/auto` routes to free models when available. The `x-openrouter-cost` response header returns `null` for free models, so no credits are debited. Good for testing without burning credits.
+- **Gateway routes mount at `/v1/*`** — `mountGateway(app, config)` from platform-core registers OpenAI-compatible routes: `POST /v1/chat/completions`, `GET /v1/models`, etc. The middleware chain: service key auth → budget check → upstream proxy → metering → credit debit.
 - **`AuthUser` has no email/name** — `platform-core`'s `AuthUser` interface is `{ id: string; roles: string[] }` only. The fleet router's `ctx.user` has no email or name. Fixed in `fleet.ts` by importing `getUserEmail()` from `@wopr-network/platform-core/email` and querying the DB directly. Without this fix, provisioned users get fallback email `${instanceName}@runpaperclip.com` and can't sign in with their real email.
 - **Provisioned user default password = their email** — `provision.ts` line 70: `hashPassword(user.email)`. Users must change it on first sign-in (no password change UI yet). For testing, sign in with email/password where both are the user's email address.
 - **Tenant proxy requires platform auth** — `tenantProxyMiddleware` (line 104) rejects unauthenticated requests with 401. To access `testbot.localhost:8080`, the user must first sign in to the platform (at `localhost:3200` or `app.localhost:8080`). The session cookie must be valid for the `*.localhost` domain. In Chrome this works automatically; in curl you must pass the cookie header manually because `localhost` domain cookies don't match `testbot.localhost`.
@@ -714,8 +734,9 @@ curl -X POST http://localhost:3200/api/auth/sign-in/email \
 
 # 2. Grant credits to your tenant (required — billing gate blocks with 0 credits)
 # Find your user ID from the sign-in response, then:
+# NOTE: balance_credits is in NANODOLLARS. 10,000,000,000 ≈ $10. NOT 10000.
 docker exec paperclip-platform-postgres-1 psql -U paperclip -d paperclip_platform -c \
-  "INSERT INTO credit_balances (tenant_id, balance_credits, last_updated) VALUES ('<user-id>', 10000, now()::text) ON CONFLICT (tenant_id) DO UPDATE SET balance_credits = 10000;"
+  "INSERT INTO credit_balances (tenant_id, balance_credits, last_updated) VALUES ('<user-id>', 10000000000, now()::text) ON CONFLICT (tenant_id) DO UPDATE SET balance_credits = 10000000000;"
 
 # 3. Create an instance via tRPC (raw JSON body — tRPC v11 format)
 curl -X POST http://localhost:3200/trpc/fleet.createInstance \
@@ -744,7 +765,24 @@ curl http://testbot.localhost:8080/api/health \
   -H "Cookie: better-auth.session_token=<token-from-step-1>"
 # Expected: {"status":"ok",...,"hostedMode":true,...}
 
-# 8. Destroy the instance when done
+# 8. Test inference gateway (per-tenant metered proxy)
+# The createInstance response includes the service key in the container env.
+# Retrieve it from the fleet profile:
+docker exec paperclip-platform-platform-1 cat /data/fleet/testbot.yaml | grep PAPERCLIP_GATEWAY_KEY
+# Or query it from inside the testbot container:
+docker exec wopr-testbot printenv PAPERCLIP_GATEWAY_KEY
+# Then call the gateway:
+curl -X POST http://localhost:3200/v1/chat/completions \
+  -H "Authorization: Bearer <PAPERCLIP_GATEWAY_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"openrouter/auto","messages":[{"role":"user","content":"Hello"}]}'
+# Expected: OpenAI-compatible JSON response with choices[0].message.content
+# Verify credit debit:
+docker exec paperclip-platform-postgres-1 psql -U paperclip -d paperclip_platform -c \
+  "SELECT balance_credits FROM credit_balances WHERE tenant_id = '<user-id>';"
+# Balance should be lower than the 10000000000 you seeded (unless free model was used)
+
+# 9. Destroy the instance when done
 curl -X POST http://localhost:3200/trpc/fleet.controlInstance \
   -H "Content-Type: application/json" \
   -b /tmp/paperclip-cookies.txt \
@@ -769,6 +807,8 @@ Not yet deployed. Checklist for go-live:
 - [ ] DNS: runpaperclip.com, app.runpaperclip.com, *.runpaperclip.com → droplet IP (Cloudflare)
 - [ ] Production Caddyfile with TLS (DNS-01 via Cloudflare)
 - [ ] .env with production secrets deployed to droplet
+- [ ] `OPENROUTER_API_KEY` set in production env (metered inference gateway)
+- [ ] `/data/fleet/meter-wal` and `/data/fleet/meter-dlq` directories writable
 - [ ] Stripe switched to live keys
 - [ ] Stripe webhook endpoint registered + checkout flow wired
 - [ ] BetterAuth URL set to https://api.runpaperclip.com (or appropriate)
