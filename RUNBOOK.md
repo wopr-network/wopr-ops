@@ -514,7 +514,7 @@ White-label deployment of the WOPR platform stack for Paperclip AI. Uses `@wopr-
 
 **Status:** LOCAL DEV ONLY — not yet deployed to production
 **Last Updated:** 2026-03-12
-**Last Operation:** End-to-end hosted mode verified. `hostedMode: true` in health response, provisioning succeeds (company + admin user + CEO agent seeded), UI skips onboarding wizard. Docker image pushed to Docker Hub (`tsavo/paperclip-managed:local`).
+**Last Operation:** Full e2e verified: `hostedMode: true` in health, provisioned admin user signs in with correct email, tenant proxy routes `testbot.localhost:8080` → container. Fixed fleet.ts to look up user email/name from DB (was falling back to `${name}@runpaperclip.com` because `AuthUser` only has `{id, roles}`).
 
 ### Repositories
 
@@ -693,6 +693,63 @@ Chrome and Firefox resolve `*.localhost` to 127.0.0.1 automatically. No `/etc/ho
 - **Credit ledger blocks instance creation** — new users start with 0 credits. If `DATABASE_URL` is configured (which it is in the compose stack), the credit ledger is active and blocks provisioning with "Insufficient credits". Grant credits via SQL: `INSERT INTO credit_balances (tenant_id, balance_credits, last_updated) VALUES ('<tenant_id>', 10000, now()::text) ON CONFLICT (tenant_id) DO UPDATE SET balance_credits = 10000;`
 - **BetterAuth password hash format** — BetterAuth uses `{hexSalt}:{hexKey}` format (scrypt N=16384, r=16, p=1, dkLen=64 via `@noble/hashes`). NOT the `$s0$` format from Node's `scryptSync`. The provision adapter uses `hashPassword` from `better-auth/crypto` directly. Default password for provisioned admin users = their email address.
 - **No BYOK** — hosted Paperclip instances use the platform's metered inference gateway (`GATEWAY_API_KEY` in `.env.local`). Users don't bring their own API keys. The onboarding wizard's adapter/key configuration step is skipped entirely in hosted mode (`hostedMode: true` in health response → UI hides wizard).
+- **`AuthUser` has no email/name** — `platform-core`'s `AuthUser` interface is `{ id: string; roles: string[] }` only. The fleet router's `ctx.user` has no email or name. Fixed in `fleet.ts` by importing `getUserEmail()` from `@wopr-network/platform-core/email` and querying the DB directly. Without this fix, provisioned users get fallback email `${instanceName}@runpaperclip.com` and can't sign in with their real email.
+- **Provisioned user default password = their email** — `provision.ts` line 70: `hashPassword(user.email)`. Users must change it on first sign-in (no password change UI yet). For testing, sign in with email/password where both are the user's email address.
+- **Tenant proxy requires platform auth** — `tenantProxyMiddleware` (line 104) rejects unauthenticated requests with 401. To access `testbot.localhost:8080`, the user must first sign in to the platform (at `localhost:3200` or `app.localhost:8080`). The session cookie must be valid for the `*.localhost` domain. In Chrome this works automatically; in curl you must pass the cookie header manually because `localhost` domain cookies don't match `testbot.localhost`.
+- **tRPC context is session-only** — `createTRPCContext()` in `app.ts` only resolves `AuthUser` from BetterAuth session cookies. The admin API key (`ADMIN_API_KEY`/`local-admin-key`) does NOT work for tRPC calls — only for Hono REST routes that use `dualAuth()` middleware. To call tRPC fleet mutations from curl, sign in first and pass the session cookie.
+- **tRPC v11 POST body format** — mutations accept raw JSON body (`{"name":"testbot"}`), NOT the tRPC v10 `{"json":{...}}` wrapper. The `{"json":{...}}` format causes "Invalid input: expected string, received undefined" because tRPC v11 doesn't unwrap the `json` key.
+- **BetterAuth column naming varies** — platform DB uses camelCase columns (`userId`, `providerId`, `accountId`) while testbot DB uses snake_case (`user_id`, `provider_id`, `account_id`). This is likely a BetterAuth version difference between platform-core and the managed Paperclip image. When querying account tables, check column names first: `SELECT column_name FROM information_schema.columns WHERE table_name = 'account';`
+
+### Testing the fleet provisioning flow (e2e)
+
+After the stack is running and healthy:
+
+```bash
+# 1. Sign in to the platform (creates session cookie)
+curl -X POST http://localhost:3200/api/auth/sign-in/email \
+  -H "Content-Type: application/json" \
+  -d '{"email":"<your-email>","password":"<your-password>"}' \
+  -c /tmp/paperclip-cookies.txt
+# Note: save the session token from the response
+
+# 2. Grant credits to your tenant (required — billing gate blocks with 0 credits)
+# Find your user ID from the sign-in response, then:
+docker exec paperclip-platform-postgres-1 psql -U paperclip -d paperclip_platform -c \
+  "INSERT INTO credit_balances (tenant_id, balance_credits, last_updated) VALUES ('<user-id>', 10000, now()::text) ON CONFLICT (tenant_id) DO UPDATE SET balance_credits = 10000;"
+
+# 3. Create an instance via tRPC (raw JSON body — tRPC v11 format)
+curl -X POST http://localhost:3200/trpc/fleet.createInstance \
+  -H "Content-Type: application/json" \
+  -b /tmp/paperclip-cookies.txt \
+  -d '{"name":"testbot"}'
+# Response: {"result":{"data":{"id":"...","name":"testbot","state":"running"}}}
+
+# 4. Verify testbot health (from inside the platform container — direct Docker network)
+docker exec paperclip-platform-platform-1 curl -sf http://wopr-testbot:3100/api/health
+# Expected: {"status":"ok",...,"hostedMode":true,...}
+
+# 5. Verify provisioned user email
+docker exec paperclip-platform-postgres-1 psql -U paperclip -d paperclip_testbot -c \
+  "SELECT id, email, name FROM \"user\";"
+# Should show the platform user's actual email, NOT testbot@runpaperclip.com
+
+# 6. Sign in to testbot as provisioned admin (password = email)
+docker exec paperclip-platform-platform-1 curl -sf -X POST http://wopr-testbot:3100/api/auth/sign-in/email \
+  -H "Content-Type: application/json" \
+  -d '{"email":"<your-email>","password":"<your-email>"}'
+# Response: token + user object
+
+# 7. Access testbot via tenant proxy (requires platform session)
+curl http://testbot.localhost:8080/api/health \
+  -H "Cookie: better-auth.session_token=<token-from-step-1>"
+# Expected: {"status":"ok",...,"hostedMode":true,...}
+
+# 8. Destroy the instance when done
+curl -X POST http://localhost:3200/trpc/fleet.controlInstance \
+  -H "Content-Type: application/json" \
+  -b /tmp/paperclip-cookies.txt \
+  -d '{"instanceId":"<id-from-step-3>","action":"destroy"}'
+```
 
 ### Teardown
 
