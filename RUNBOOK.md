@@ -503,3 +503,204 @@ docker compose -f docker-compose.local.yml --env-file .env.local --profile voice
 ```
 
 The `-v` flag removes volumes including the postgres database. Omit it to preserve data across restarts.
+
+---
+
+## Paperclip Platform (runpaperclip.com)
+
+White-label deployment of the WOPR platform stack for Paperclip AI. Uses `@wopr-network/platform-core` for shared DB schema, auth, and billing. The dashboard is `platform-ui-core` with `NEXT_PUBLIC_BRAND_*` env vars for Paperclip branding.
+
+### Current State
+
+**Status:** LOCAL DEV ONLY — not yet deployed to production
+**Last Updated:** 2026-03-12
+**Last Operation:** Local testing stack committed and pushed (commit c0d1a6f). Not yet tested end-to-end.
+
+### Repositories
+
+| Repo | Local Path | Purpose |
+|------|-----------|---------|
+| wopr-network/paperclip-platform | ~/paperclip-platform | Hono API — fleet, billing, auth, tenant proxy |
+| wopr-network/platform-ui-core | ~/platform-ui-core | Brand-agnostic Next.js dashboard |
+| wopr-network/paperclip | ~/paperclip | Managed Paperclip bot — one container per tenant |
+
+### Stack (local dev)
+
+| Service | Image | Port | URL |
+|---------|-------|------|-----|
+| postgres | postgres:16-alpine | 5433 (mapped from 5432) | localhost:5433 |
+| platform (API) | Built from ~/paperclip-platform | 3200 | http://localhost:3200/health |
+| dashboard | Built from ~/platform-ui-core | 3000 (via Caddy at 8080) | http://app.localhost:8080 |
+| caddy | caddy:2-alpine | 8080 | http://app.localhost:8080 |
+| seed | paperclip-managed:local | 3100 (internal) | N/A |
+
+### Prerequisites
+
+1. **Docker + Docker Compose** — verify with `docker compose version`
+2. **All three repos cloned** — `~/paperclip-platform`, `~/platform-ui-core`, `~/paperclip`
+3. **Stripe test keys** — copy `sk_test_*` and `whsec_*` from `~/wopr-platform/.env`
+
+### First-time setup
+
+```bash
+cd ~/paperclip-platform
+
+# 1. Create .env.local from the template
+cp .env.local.example .env.local
+
+# 2. Fill in secrets
+#    - Copy STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET from ~/wopr-platform/.env
+#    - Generate auth secret:
+openssl rand -hex 32   # paste as BETTER_AUTH_SECRET
+openssl rand -hex 32   # paste as PROVISION_SECRET (or keep the default for local)
+
+# 3. Build the managed Paperclip image
+docker build -t paperclip-managed:local -f ~/paperclip/Dockerfile.managed ~/paperclip
+
+# 4. Start the stack
+bash scripts/local-test.sh
+# or manually:
+docker compose -f docker-compose.local.yml up --build
+```
+
+### Starting the stack (after first-time setup)
+
+```bash
+cd ~/paperclip-platform
+docker compose -f docker-compose.local.yml up --build
+```
+
+Or use the convenience script which also runs preflight checks:
+
+```bash
+bash scripts/local-test.sh
+```
+
+### What happens on startup
+
+The platform API (`src/index.ts`) runs this sequence in the serve callback:
+
+1. Check `DATABASE_URL` is set (provided by docker-compose)
+2. Create Postgres pool + Drizzle DB instance
+3. Run platform-core Drizzle migrations (`src/db/migrate.ts`)
+4. Initialize BetterAuth with `initBetterAuth({ pool, db })`
+5. Run BetterAuth migrations
+6. Wire `DrizzleCreditLedger` → `setCreditLedger()` (billing gate)
+7. Wire `DrizzleUserRoleRepository` → `setUserRoleRepo()` (admin auth)
+8. Initialize Stripe SDK if `STRIPE_SECRET_KEY` is set (webhook routes TBD)
+9. Start ProxyManager → Caddy sync
+10. Hydrate routes from running Docker containers
+11. Start health monitor
+
+### Health checks
+
+```bash
+# Platform API
+curl http://localhost:3200/health
+
+# Dashboard (via Caddy)
+curl -I http://app.localhost:8080
+
+# Postgres (from host — mapped to 5433)
+PGPASSWORD=paperclip-local psql -h localhost -p 5433 -U paperclip -d paperclip_platform -c "SELECT 1;"
+
+# Caddy admin
+curl http://localhost:2019/config/
+
+# Seed container
+docker compose -f docker-compose.local.yml logs seed
+```
+
+### Common operations
+
+```bash
+# View logs for a specific service
+docker compose -f docker-compose.local.yml logs -f platform
+
+# Rebuild only the platform API (after code changes)
+docker compose -f docker-compose.local.yml up --build platform
+
+# Rebuild only the dashboard (after platform-ui-core changes)
+docker compose -f docker-compose.local.yml up --build dashboard
+
+# Reset database (wipe all data, re-run migrations on next start)
+docker compose -f docker-compose.local.yml down -v
+docker compose -f docker-compose.local.yml up --build
+
+# Rebuild the managed Paperclip image (after ~/paperclip changes)
+docker build -t paperclip-managed:local -f ~/paperclip/Dockerfile.managed ~/paperclip
+docker compose -f docker-compose.local.yml up --build seed
+
+# Connect to Postgres directly
+docker compose -f docker-compose.local.yml exec postgres psql -U paperclip -d paperclip_platform
+```
+
+### Caddy routing (local)
+
+The local Caddyfile (`caddy/Caddyfile.local`) uses plain HTTP, no TLS:
+
+| URL Pattern | Destination | Purpose |
+|-------------|-------------|---------|
+| http://app.localhost:8080 | dashboard:3000 | Dashboard UI |
+| http://localhost:8080 | redirect → app.localhost:8080 | Bare domain redirect |
+| http://*.localhost:8080 | platform:3200 | Tenant subdomain proxy |
+
+Chrome and Firefox resolve `*.localhost` to 127.0.0.1 automatically. No `/etc/hosts` entries needed.
+
+### Stripe integration
+
+- **Test keys:** `sk_test_*` from `~/wopr-platform/.env` — no real charges
+- **SDK initialized** when `STRIPE_SECRET_KEY` is set in `.env.local`
+- **Webhook routes:** not yet wired — credits can be manually granted via admin API for now
+- **Checkout flow:** not yet implemented
+
+### Differences from WOPR local dev
+
+| Area | WOPR (Approach B flat) | Paperclip |
+|------|----------------------|-----------|
+| API port | 3100 | 3200 |
+| Dashboard | wopr-platform-ui | platform-ui-core (brand-agnostic) |
+| Compose file | wopr-ops/docker-compose.local.yml | paperclip-platform/docker-compose.local.yml |
+| Caddy port | 80 | 8080 |
+| Domain | localhost / api.localhost | app.localhost:8080 / *.localhost:8080 |
+| GPU services | llama, chatterbox, whisper, qwen | None (not needed for Paperclip) |
+| DB name | wopr_platform | paperclip_platform |
+| DB user | wopr | paperclip |
+| DB password | from .env.local | paperclip-local (default) |
+| Shared library | @wopr-network/platform-core | Same — shared |
+| Branding | Hardcoded WOPR | NEXT_PUBLIC_BRAND_* env vars |
+
+### Paperclip local dev gotchas
+
+- **`docker compose restart` does not re-read env_file** — use `--force-recreate` or `down && up` after `.env.local` changes.
+- **Dashboard builds from `../platform-ui-core`** — the compose file uses a relative context path. The platform-ui-core repo must be cloned at `~/platform-ui-core` (sibling to `~/paperclip-platform`).
+- **`NEXT_PUBLIC_*` vars are baked at build time** — changing brand vars requires `docker compose up --build dashboard`, not just a restart.
+- **Postgres mapped to port 5433** — not 5432, to avoid conflicts with any host Postgres. Connect with `-p 5433`.
+- **BetterAuth migrations run on every startup** — this is idempotent and safe. Drizzle migrations also run on every startup.
+- **Stripe without webhook routes** — the Stripe SDK initializes but no webhook endpoint is wired yet. Use the admin API to manually grant credits for testing billing flows.
+- **Seed container** — the `wopr-seed` container runs a Paperclip instance for testing the provision flow. It needs the managed image built first (`paperclip-managed:local`).
+- **`*.localhost` subdomains** — Chrome/Firefox resolve these to 127.0.0.1 natively. Safari does NOT. Use Chrome or Firefox for local testing.
+
+### Teardown
+
+```bash
+# Stop all services (preserve data)
+docker compose -f docker-compose.local.yml down
+
+# Stop and wipe all data (DB, Caddy config, fleet data)
+docker compose -f docker-compose.local.yml down -v
+```
+
+### Production deployment (TBD)
+
+Not yet deployed. Checklist for go-live:
+
+- [ ] DO droplet provisioned
+- [ ] DNS: runpaperclip.com, app.runpaperclip.com, *.runpaperclip.com → droplet IP (Cloudflare)
+- [ ] Production Caddyfile with TLS (DNS-01 via Cloudflare)
+- [ ] .env with production secrets deployed to droplet
+- [ ] Stripe switched to live keys
+- [ ] Stripe webhook endpoint registered + checkout flow wired
+- [ ] BetterAuth URL set to https://api.runpaperclip.com (or appropriate)
+- [ ] GHCR CI/CD pipeline for paperclip-platform + paperclip images
+- [ ] Smoke test: sign-up → pay → instance provisioned → subdomain accessible
