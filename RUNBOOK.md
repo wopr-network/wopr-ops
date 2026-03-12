@@ -514,7 +514,7 @@ White-label deployment of the WOPR platform stack for Paperclip AI. Uses `@wopr-
 
 **Status:** LOCAL DEV ONLY — not yet deployed to production
 **Last Updated:** 2026-03-12
-**Last Operation:** Local testing stack committed and pushed (commit c0d1a6f). Not yet tested end-to-end.
+**Last Operation:** End-to-end hosted mode verified. `hostedMode: true` in health response, provisioning succeeds (company + admin user + CEO agent seeded), UI skips onboarding wizard. Docker image pushed to Docker Hub (`tsavo/paperclip-managed:local`).
 
 ### Repositories
 
@@ -554,8 +554,11 @@ cp .env.local.example .env.local
 openssl rand -hex 32   # paste as BETTER_AUTH_SECRET
 openssl rand -hex 32   # paste as PROVISION_SECRET (or keep the default for local)
 
-# 3. Build the managed Paperclip image
-docker build -t paperclip-managed:local -f ~/paperclip/Dockerfile.managed ~/paperclip
+# 3. Build the managed Paperclip image (MUST build from ~/paperclip context)
+cd ~/paperclip
+docker build --provenance=false --sbom=false -f Dockerfile.managed -t tsavo/paperclip-managed:local .
+# Push to Docker Hub (fleet's pullImage() pulls on every container create)
+docker push tsavo/paperclip-managed:local
 
 # 4. Start the stack
 bash scripts/local-test.sh
@@ -628,8 +631,9 @@ docker compose -f docker-compose.local.yml down -v
 docker compose -f docker-compose.local.yml up --build
 
 # Rebuild the managed Paperclip image (after ~/paperclip changes)
-docker build -t paperclip-managed:local -f ~/paperclip/Dockerfile.managed ~/paperclip
-docker compose -f docker-compose.local.yml up --build seed
+cd ~/paperclip && docker build --provenance=false --sbom=false -f Dockerfile.managed -t tsavo/paperclip-managed:local .
+docker push tsavo/paperclip-managed:local
+# Destroy + recreate any running instances to pick up the new image
 
 # Connect to Postgres directly
 docker compose -f docker-compose.local.yml exec postgres psql -U paperclip -d paperclip_platform
@@ -680,6 +684,15 @@ Chrome and Firefox resolve `*.localhost` to 127.0.0.1 automatically. No `/etc/ho
 - **Stripe without webhook routes** — the Stripe SDK initializes but no webhook endpoint is wired yet. Use the admin API to manually grant credits for testing billing flows.
 - **Seed container** — the `wopr-seed` container runs a Paperclip instance for testing the provision flow. It needs the managed image built first (`paperclip-managed:local`).
 - **`*.localhost` subdomains** — Chrome/Firefox resolve these to 127.0.0.1 natively. Safari does NOT. Use Chrome or Firefox for local testing.
+- **CRITICAL: Build context must be `~/paperclip`, NOT `~/paperclip-platform`** — the Dockerfile.managed lives in `~/paperclip/` and `COPY . .` copies the build context. If you `cd ~/paperclip-platform && docker build -f ~/paperclip/Dockerfile.managed .`, the context is the platform repo, not the paperclip app repo. The build will succeed (wrong source gets compiled) but the resulting image will have stale code. Always `cd ~/paperclip` first.
+- **FleetManager pulls image from Docker Hub on every `create()`** — `@wopr-network/platform-core`'s `FleetManager.pullImage()` calls `docker.pull()` before creating the container. For `tsavo/paperclip-managed:local`, this pulls from Docker Hub, overwriting any local-only build. You MUST `docker push` after every rebuild. If you skip the push, new instances will use the old Docker Hub image.
+- **Docker buildx attestation manifests** — buildx generates OCI manifest lists with provenance attestations. Use `--provenance=false --sbom=false` to produce a flat image that `docker push` sends correctly. Without these flags, `docker push` may push only the attestation manifest, leaving the real amd64 image unchanged on Docker Hub.
+- **`tsc -b` in UI build compiles server as project reference** — `Dockerfile.managed` builds the UI first (`pnpm --filter @paperclipai/ui build` which runs `tsc -b`), then the server. The UI's `tsc -b` compiles the server as a referenced project, producing `server/dist/`. The Dockerfile has `rm -rf server/dist` before the server build to ensure fresh compilation. Without this, the server's `tsc` sees the stale `server/dist/` and may skip recompilation.
+- **`CADDY_ADMIN_URL` must be empty in `.env.local`** — the platform's ProxyManager POSTs to Caddy's `/load` endpoint on startup, which overwrites the Caddyfile wildcard routing with a dynamic HTTPS config (port 443). This kills the HTTP port 8080 listener. The compose `environment:` block must NOT set `CADDY_ADMIN_URL` — let `.env.local`'s empty value take effect. If Caddy stops accepting connections on port 8080, this is probably why.
+- **Stale fleet profile YAML files** — fleet profiles are stored as YAML files in `/data/fleet/` inside the platform container. Failed or destroyed instances may leave stale profiles. When hitting "Instance limit reached" (max 5 per tenant), check for stale profiles: `docker exec paperclip-platform-platform-1 ls /data/fleet/`. Remove stale ones manually.
+- **Credit ledger blocks instance creation** — new users start with 0 credits. If `DATABASE_URL` is configured (which it is in the compose stack), the credit ledger is active and blocks provisioning with "Insufficient credits". Grant credits via SQL: `INSERT INTO credit_balances (tenant_id, balance_credits, last_updated) VALUES ('<tenant_id>', 10000, now()::text) ON CONFLICT (tenant_id) DO UPDATE SET balance_credits = 10000;`
+- **BetterAuth password hash format** — BetterAuth uses `{hexSalt}:{hexKey}` format (scrypt N=16384, r=16, p=1, dkLen=64 via `@noble/hashes`). NOT the `$s0$` format from Node's `scryptSync`. The provision adapter uses `hashPassword` from `better-auth/crypto` directly. Default password for provisioned admin users = their email address.
+- **No BYOK** — hosted Paperclip instances use the platform's metered inference gateway (`GATEWAY_API_KEY` in `.env.local`). Users don't bring their own API keys. The onboarding wizard's adapter/key configuration step is skipped entirely in hosted mode (`hostedMode: true` in health response → UI hides wizard).
 
 ### Teardown
 
