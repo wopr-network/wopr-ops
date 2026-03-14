@@ -980,7 +980,15 @@ curl -s http://localhost:8545 -X POST \
 
 **For local dev / CI:** Use Anvil (Foundry) with a Base mainnet fork instead of running the full node stack. Lighter, faster, no sync required.
 
-**Install Foundry:**
+**GHCR auth required for Docker:** The Anvil image is on `ghcr.io/foundry-rs/foundry`. GHCR denies anonymous pulls even for public images. Login first:
+
+```bash
+gh auth token | docker login ghcr.io -u tsavo --password-stdin
+```
+
+This only needs to be done once — Docker caches the credential in `~/.docker/config.json`.
+
+**Install Foundry (for local use without Docker):**
 
 ```bash
 curl -L https://foundry.paradigm.xyz | bash
