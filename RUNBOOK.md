@@ -987,33 +987,57 @@ anvil:
     - "8545:8545"
 ```
 
-### Stablecoin HD wallet
+### Unified HD wallet (BTC + stablecoins)
 
-**Architecture:** Server has only the xpub (public key). It can derive deposit addresses but cannot sign transactions. Private keys never touch the server. Sweeping funds requires the mnemonic, which is stored offline.
+**One mnemonic, two derivation paths.** A single 24-word BIP-39 mnemonic backs up both BTC (BTCPay) and stablecoin (EVM watcher) wallets. Server has only xpubs (public keys). Private keys never touch the server.
 
-**Derivation path:** `m/44'/60'/0'/0/<index>` (BIP-44, Ethereum)
+**Derivation paths:**
 
-**Current xpub:** Set in `EVM_XPUB` env var in paperclip-platform `.env.local`. First deposit address (index 0): `0x23Edd02dDeec8396319722c8fAd47F044310D254`.
+| Asset | BIP-44 Path | xpub env var | Where used |
+|-------|-------------|-------------|------------|
+| BTC | `m/44'/0'/0'` | BTCPay store config | BTCPay Server on-chain wallet |
+| EVM (stablecoins) | `m/44'/60'/0'` | `EVM_XPUB` | Platform EVM watcher deposit addresses |
+
+**Current xpubs:**
+- **BTC**: `xpub6BuGg4sQuvoA7q545ZoStxU7QP24qmZNMo39FxRjLwbBCQ77sjsHGcpxeNVboGZQNdbeANHVK1GJx7ECMfjohkpLqoGLVP9SCQM4bR1F5vh`
+- **EVM**: `xpub6DSVkV7mgEZrnBEmZEq412Cx9sYYZtFvGSb6W9bRDDSikYdpmUiJoNeuechuir63ZjdHQuWBLwchQQnh2GD6DJP6bPKUa1bey1X6XvH9jvM`
+- First EVM deposit address (index 0): `0x23Edd02dDeec8396319722c8fAd47F044310D254`
+
+**BTCPay xpub setup (replace hot wallet with our xpub):**
+
+```bash
+# After BTCPay is running and store is created, set the derivation scheme to our xpub:
+curl -s -X PUT "http://localhost:14142/api/v1/stores/<storeId>/payment-methods/onchain/BTC" \
+  -H "Content-Type: application/json" \
+  -u "admin@runpaperclip.com:<password>" \
+  -d '{"derivationScheme":"xpub6BuGg4sQuvoA7q545ZoStxU7QP24qmZNMo39FxRjLwbBCQ77sjsHGcpxeNVboGZQNdbeANHVK1GJx7ECMfjohkpLqoGLVP9SCQM4bR1F5vh"}'
+```
+
+This replaces the hot wallet with our xpub — BTCPay derives deposit addresses from it but cannot sign (no private keys). Same security model as the EVM watcher.
 
 **Recovery protocol:**
 
 1. Encrypted mnemonic backup: `G:\My Drive\paperclip-wallet.enc`
 2. Decrypt: `openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d -pass pass:<passphrase> -in paperclip-wallet.enc`
-3. Import the 24-word mnemonic into MetaMask/Rabby to access funds
-4. Re-derive xpub if needed: `HDKey.fromMasterSeed(mnemonicToSeedSync(mnemonic)).derive("m/44'/60'/0'").publicExtendedKey`
+3. Import the 24-word mnemonic into any BIP-39 compatible wallet (MetaMask, Electrum, Rabby, etc.)
+4. BTC funds: derivation path `m/44'/0'/0'` — use Electrum or any BIP-44 BTC wallet
+5. Stablecoin funds: derivation path `m/44'/60'/0'` — use MetaMask/Rabby
+6. Re-derive xpubs if needed:
+   - BTC: `HDKey.fromMasterSeed(mnemonicToSeedSync(mnemonic)).derive("m/44'/0'/0'").publicExtendedKey`
+   - EVM: `HDKey.fromMasterSeed(mnemonicToSeedSync(mnemonic)).derive("m/44'/60'/0'").publicExtendedKey`
 
 **Sweep protocol (Phase 4 — manual for now):**
 
 1. Query platform API for deposit addresses with balances (TODO: add endpoint)
-2. Import mnemonic into MetaMask/Rabby on local machine
-3. For each address with a balance: send ERC-20 transfer to treasury address
+2. Import mnemonic into MetaMask/Rabby (EVM) or Electrum (BTC) on local machine
+3. For each address with a balance: send transfer to treasury address
 4. Treasury address = your main wallet (the one you want funds consolidated to)
 
 **Security rules:**
-- xpub is public — safe in env vars, repos, logs
+- xpubs are public — safe in env vars, repos, logs
 - Mnemonic is the master key — NEVER on the server, NEVER in a repo, NEVER in plaintext on disk
 - If the server is compromised, funds in deposit addresses are safe (attacker can see addresses but can't sign)
-- If the mnemonic is compromised, ALL funds in ALL derived addresses are at risk — sweep immediately
+- If the mnemonic is compromised, ALL funds in ALL derived addresses (BTC + stablecoins) are at risk — sweep immediately
 
 ### Differences from WOPR local dev
 
