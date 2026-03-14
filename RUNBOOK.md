@@ -523,7 +523,7 @@ We own everything except Node, Docker, Hono, Next.js, and third-party libs. Ever
 ```
 platform-core (npm @wopr-network/platform-core, v1.14.4, semantic-release)
   ↓ consumed by
-paperclip-platform (Hono API)         platform-ui-core (npm @wopr-network/platform-ui-core, v1.1.3, tag-triggered publish)
+paperclip-platform (Hono API)         platform-ui-core (npm @wopr-network/platform-ui-core, v1.1.4, semantic-release)
                                         ↓ consumed by
                                       paperclip-platform-ui (thin Next.js shell, pnpm)
 
@@ -537,7 +537,7 @@ paperclip-platform fleet (Docker containers per tenant)
 | Owning Repo | How to Publish | Downstream Update |
 |-------------|---------------|-------------------|
 | platform-core | Merge to main → semantic-release auto-publishes | `cd ~/paperclip-platform && npm update @wopr-network/platform-core && docker compose up --build platform` |
-| platform-ui-core | `git tag v1.x.y && git push --tags` → CI publishes to npm | `cd ~/paperclip-platform-ui && pnpm update @wopr-network/platform-ui-core && cd ~/paperclip-platform && docker compose up --build dashboard` |
+| platform-ui-core | Merge to main → semantic-release auto-publishes | `cd ~/paperclip-platform-ui && pnpm update @wopr-network/platform-ui-core && cd ~/paperclip-platform && docker compose up --build dashboard` |
 | paperclip (managed image) | `cd ~/paperclip && docker build -t tsavo/paperclip-managed:local -f Dockerfile.managed . && docker push tsavo/paperclip-managed:local` | `cd ~/paperclip-platform && docker compose down -v && docker compose up --build` (fleet pulls on create) |
 | paperclip-platform | Rebuild Docker: `docker compose up --build platform` | N/A (leaf node) |
 | paperclip-platform-ui | Rebuild Docker: `docker compose up --build dashboard` | N/A (leaf node) |
@@ -547,7 +547,7 @@ paperclip-platform fleet (Docker containers per tenant)
 | Repo | Local Path | npm Package | Purpose |
 |------|-----------|-------------|---------|
 | wopr-network/platform-core | ~/platform-core | @wopr-network/platform-core (v1.14.4) | Shared backend: DB, auth, billing, fleet, gateway |
-| wopr-network/platform-ui-core | ~/platform-ui-core | @wopr-network/platform-ui-core (v1.1.3) | Brand-agnostic Next.js UI (dashboard, auth pages) |
+| wopr-network/platform-ui-core | ~/platform-ui-core | @wopr-network/platform-ui-core (v1.1.4) | Brand-agnostic Next.js UI (dashboard, auth pages) |
 | wopr-network/paperclip-platform | ~/paperclip-platform | — | Hono API — fleet, billing, auth, tenant proxy |
 | wopr-network/paperclip-platform-ui | ~/paperclip-platform-ui | — | Paperclip dashboard — thin shell on platform-ui-core |
 | wopr-network/paperclip | ~/paperclip | — | Managed bot image (Docker Hub: tsavo/paperclip-managed) |
@@ -587,6 +587,7 @@ paperclip-platform fleet (Docker containers per tenant)
 1. **Docker + Docker Compose** — verify with `docker compose version`
 2. **All repos cloned as siblings** — `~/paperclip-platform`, `~/paperclip-platform-ui`, `~/platform-ui-core`, `~/paperclip`
 3. **Stripe test keys** — copy `sk_test_*` and `whsec_*` from `~/wopr-platform/.env`
+5. **Resend API key** — `RESEND_API_KEY` and `RESEND_FROM_EMAIL=noreply@runpaperclip.com`
 4. **/etc/hosts entries** — see above
 
 ### First-time setup
@@ -688,7 +689,7 @@ Tested via curl through Caddy at `runpaperclip.com:8080`:
 curl http://localhost:3200/health
 
 # Dashboard (via Caddy)
-curl -I http://app.localhost:8080
+curl -I http://app.runpaperclip.com:8080
 
 # Postgres (from host — mapped to 5433)
 PGPASSWORD=paperclip-local psql -h localhost -p 5433 -U paperclip -d paperclip_platform -c "SELECT 1;"
@@ -734,17 +735,49 @@ docker push tsavo/paperclip-managed:local
 docker compose -f docker-compose.local.yml exec postgres psql -U paperclip -d paperclip_platform
 ```
 
-### Caddy routing (local)
+### .env.local required keys
 
-The local Caddyfile (`caddy/Caddyfile.local`) uses plain HTTP, no TLS:
+Beyond the obvious Stripe/DB/auth keys, these are easy to miss:
 
-| URL Pattern | Destination | Purpose |
-|-------------|-------------|---------|
-| http://app.localhost:8080 | dashboard:3000 | Dashboard UI |
-| http://localhost:8080 | redirect → app.localhost:8080 | Bare domain redirect |
-| http://*.localhost:8080 | platform:3200 | Tenant subdomain proxy |
+| Key | Source | Why |
+|-----|--------|-----|
+| `RESEND_API_KEY` | Copy from `~/wopr-platform/.env` | Verification emails. Without it: signup works but logs "RESEND_API_KEY environment variable is required" on every account creation. |
+| `RESEND_FROM_EMAIL` | `noreply@runpaperclip.com` | Sender address. Must match a verified domain in Resend. For local dev, the shared WOPR key works. Production needs its own key with `runpaperclip.com` verified. |
+| `CADDY_ADMIN_URL` | Set empty (`""`) | Prevents ProxyManager from overwriting the Caddyfile wildcard. |
+| `UI_ORIGIN` | `http://app.runpaperclip.com:8080,http://localhost:3000,http://127.0.0.1:3000` | CORS allowlist. Missing origins = signup/login fails silently. |
 
-Chrome and Firefox resolve `*.localhost` to 127.0.0.1 automatically. No `/etc/hosts` entries needed.
+### /etc/hosts — per-instance entries
+
+Each new tenant instance needs a manual `/etc/hosts` entry for local dev:
+
+```bash
+# After creating instance "smoke-org":
+echo "127.0.0.1 smoke-org.runpaperclip.com" | sudo tee -a /etc/hosts
+```
+
+There's no wildcard in `/etc/hosts`. Production uses real DNS (wildcard A record).
+
+### Tenant proxy security
+
+The tenant proxy (`src/proxy/tenant-proxy.ts`) forwards a curated set of headers to upstream containers. **`authorization` is NOT forwarded** — platform auth tokens must never leak to tenant containers. The proxy injects `x-paperclip-user-id` and `x-paperclip-tenant` headers instead.
+
+### Error handling on startup
+
+The init catch block (lines 79-84 of `src/index.ts`) covers DB, auth, AND gateway mounting. If any of these fail, the server starts in degraded mode — billing, auth, and gateway routes may be unavailable. Both the catch block and the `main().catch` handler log full stack traces.
+
+### Review bot gotchas
+
+- **Greptile** has stale WOPR conventions in its custom context. It will flag `_cents` naming as wrong ("should be `_credits`") — **ignore this**. At the API display boundary, fields are named for their unit (cents), not the domain concept. This convention was established explicitly.
+- **CodeRabbit** auto-pauses after too many commits. `@coderabbitai review` to trigger manually.
+- After force-pushing, all reviewer comments may reference the OLD diff. Verify findings in the actual file before acting.
+
+### WSL2 headless Chrome limitation (test tooling)
+
+Headless Chromium in WSL2 can navigate pages but `fetch()` from JS context fails universally — even with `--host-resolver-rules`. This means:
+- Browser smoke tests can verify page structure/routing via screenshots
+- Client-side tRPC queries won't fire (dashboard stays in loading state)
+- Use **curl** for API flow verification, browser only for visual checks
+- This is NOT a product bug — real browsers work fine
 
 ### Stripe integration
 
