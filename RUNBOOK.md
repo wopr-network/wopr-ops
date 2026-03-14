@@ -1026,12 +1026,22 @@ This replaces the hot wallet with our xpub — BTCPay derives deposit addresses 
    - BTC: `HDKey.fromMasterSeed(mnemonicToSeedSync(mnemonic)).derive("m/44'/0'/0'").publicExtendedKey`
    - EVM: `HDKey.fromMasterSeed(mnemonicToSeedSync(mnemonic)).derive("m/44'/60'/0'").publicExtendedKey`
 
+**Treasury addresses (sweep destination):**
+
+Derived from the same mnemonic on the internal chain (BIP-44 chain index 1), separate from deposit addresses (external chain, index 0). No collision.
+
+| Asset | Path | Address |
+|-------|------|---------|
+| EVM stablecoins | `m/44'/60'/0'/1/0` | `0x6cEff0F47d5d918e50Fd40f7611f673a13edA06d` |
+| BTC | First internal address from BTCPay | (derived by BTCPay from the xpub) |
+
 **Sweep protocol (Phase 4 — manual for now):**
 
 1. Query platform API for deposit addresses with balances (TODO: add endpoint)
-2. Import mnemonic into MetaMask/Rabby (EVM) or Electrum (BTC) on local machine
-3. For each address with a balance: send transfer to treasury address
-4. Treasury address = your main wallet (the one you want funds consolidated to)
+2. Import mnemonic into MetaMask/Rabby on local machine
+3. Sweep stablecoins: for each deposit address with a balance, send ERC-20 transfer to `0x6cEff0F47d5d918e50Fd40f7611f673a13edA06d` (treasury)
+4. Sweep BTC: BTCPay has a built-in sweep UI (Store → Wallets → BTC → Send → Sweep all)
+5. From treasury, move to exchange or cold storage as needed
 
 **Security rules:**
 - xpubs are public — safe in env vars, repos, logs
