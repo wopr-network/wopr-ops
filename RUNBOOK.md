@@ -798,7 +798,9 @@ Headless Chromium in WSL2 can navigate pages but `fetch()` from JS context fails
 - **Webhook routes:** Stripe webhooks not yet wired — credits can be manually granted via admin API for now
 - **Same Stripe account** for WOPR and Paperclip is fine (key is account-scoped, not domain-scoped). Production needs separate price IDs (Paperclip branding) and a separate webhook endpoint (`whsec_*` is endpoint-specific).
 
-### BTCPay Server integration (crypto payments)
+### BTCPay Server integration (crypto payments) — BEING REPLACED
+
+> **BTCPay is being replaced by native bitcoind watcher (PR #57).** The native watcher talks to bitcoind directly — eliminates nbxplorer and btcpayserver containers (3 → 1). Same xpub, same mnemonic, same ledger. BTCPay docs below are kept for reference until migration is complete.
 
 **Architecture decision:** PayRam was the original crypto gateway but its site has broken SSL and appears defunct. Replaced with BTCPay Server — self-hosted, zero fees, zero vendor dependencies, open source, battle-tested. BTCPayClient in platform-core uses plain `fetch` to the Greenfield API v1 (no npm SDK dependency).
 
@@ -976,16 +978,42 @@ curl -s http://localhost:8545 -X POST \
 - **op-node can't connect to L1:** check L1 RPC endpoint is reachable and not rate-limited
 - **No Transfer events detected:** verify USDC contract address matches Base mainnet (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`), check watcher `fromBlock` cursor
 
-**For local dev / CI:** Use Anvil (Foundry) with a Base mainnet fork instead of running the full node stack. Lighter, faster, no sync required:
+**For local dev / CI:** Use Anvil (Foundry) with a Base mainnet fork instead of running the full node stack. Lighter, faster, no sync required.
 
-```yaml
-anvil:
-  image: ghcr.io/foundry-rs/foundry:latest
-  entrypoint: ["anvil"]
-  command: --fork-url https://mainnet.base.org --host 0.0.0.0 --port 8545
-  ports:
-    - "8545:8545"
+**Install Foundry:**
+
+```bash
+curl -L https://foundry.paradigm.xyz | bash
+~/.foundry/bin/foundryup
 ```
+
+**Run Anvil (Base fork):**
+
+```bash
+~/.foundry/bin/anvil --fork-url https://mainnet.base.org --host 0.0.0.0 --port 8545 --chain-id 8453
+```
+
+Or via docker-compose (paperclip-platform already has this service defined — but note `ghcr.io/foundry-rs/foundry` requires auth. Use local Foundry install instead).
+
+**Test stablecoin payment on Anvil:**
+
+```bash
+CAST=~/.foundry/bin/cast
+USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+DEPOSIT=0x23Edd02dDeec8396319722c8fAd47F044310D254  # our index-0 address
+WHALE=0x3304E22DDaa22bCdC5fCa2269b418046aE7b566A    # has ~951 USDC on Base
+
+# Impersonate whale, send 10 USDC to deposit
+$CAST rpc anvil_impersonateAccount $WHALE --rpc-url http://localhost:8545
+$CAST send $USDC "transfer(address,uint256)(bool)" $DEPOSIT 10000000 --from $WHALE --rpc-url http://localhost:8545 --unlocked
+$CAST rpc anvil_stopImpersonatingAccount $WHALE --rpc-url http://localhost:8545
+
+# Verify
+$CAST call $USDC "balanceOf(address)(uint256)" $DEPOSIT --rpc-url http://localhost:8545
+# Expected: 10000000 (10 USDC)
+```
+
+**E2E test script:** `wopr-ops/scripts/test-payments-e2e.sh` (tests both BTC regtest + stablecoin Anvil fork)
 
 ### Unified HD wallet (BTC + stablecoins)
 
