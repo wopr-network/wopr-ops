@@ -660,9 +660,11 @@ The platform API (`src/index.ts`) runs this sequence **BEFORE calling `serve()`*
 
 ### Credit system rules (INVARIANT)
 
-- **Integer math only** — credit values are nanodollars. Never floating point for money.
+- **1 credit = 1 nanodollar** — the atomic internal unit. 10M nanodollars = 1 cent. 1B nanodollars = $1.
+- **Integer math only** — never floating point for money.
 - **Balanced journal entries** — every mutation posts `sum(debits) === sum(credits)`.
-- **API boundary** — backend sends `balance_credits` (in cents). UI divides by 100 for display.
+- **API boundary** — `toCentsRounded()` converts nanodollars → cents. Fields named `balance_cents`, `daily_burn_cents` — named for the unit, NEVER `balance_credits`.
+- **UI** — divides cents by 100 to show dollars.
 - **Idempotent grants** — `grantSignupCredits` uses `referenceId` dedup.
 - **Any violation is a bug** — fix immediately.
 
@@ -674,7 +676,7 @@ Tested via curl through Caddy at `runpaperclip.com:8080`:
 |------|----------|--------|
 | Landing page | `GET app.runpaperclip.com:8080` | PASS — Paperclip branding |
 | Signup | `POST api.runpaperclip.com:8080/api/auth/sign-up/email` | PASS — user created, `Domain=.runpaperclip.com` cookie |
-| $5 credits | `GET .../trpc/billing.creditsBalance` | PASS — `balance_credits: 500` ($5.00) |
+| $5 credits | `GET .../trpc/billing.creditsBalance` | PASS — `balance_cents: 500` ($5.00) |
 | Fleet list | `GET .../trpc/fleet.listInstances` | PASS — `{"bots":[]}` |
 | Create instance | `POST .../trpc/fleet.createInstance?batch=1` | PASS — container running, healthy |
 | Tenant subdomain | `GET my-org.runpaperclip.com:8080` | PASS — Caddy → platform proxy → container UI |
