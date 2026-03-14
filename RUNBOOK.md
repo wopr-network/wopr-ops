@@ -1035,13 +1035,35 @@ Derived from the same mnemonic on the internal chain (BIP-44 chain index 1), sep
 | EVM stablecoins | `m/44'/60'/0'/1/0` | `0x6cEff0F47d5d918e50Fd40f7611f673a13edA06d` |
 | BTC | First internal address from BTCPay | (derived by BTCPay from the xpub) |
 
-**Sweep protocol (Phase 4 — manual for now):**
+**Sweep protocol:**
 
-1. Query platform API for deposit addresses with balances (TODO: add endpoint)
-2. Import mnemonic into MetaMask/Rabby on local machine
-3. Sweep stablecoins: for each deposit address with a balance, send ERC-20 transfer to `0x6cEff0F47d5d918e50Fd40f7611f673a13edA06d` (treasury)
-4. Sweep BTC: BTCPay has a built-in sweep UI (Store → Wallets → BTC → Send → Sweep all)
-5. From treasury, move to exchange or cold storage as needed
+Stablecoin sweep script: `wopr-ops/scripts/sweep-stablecoins.ts`
+
+```bash
+# Dry run (default — scans balances, no transactions):
+openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d \
+  -pass pass:<passphrase> -in "/mnt/g/My Drive/paperclip-wallet.enc" \
+  | EVM_RPC_BASE=http://localhost:8545 npx tsx scripts/sweep-stablecoins.ts
+
+# Real sweep (broadcasts transactions):
+openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d \
+  -pass pass:<passphrase> -in "/mnt/g/My Drive/paperclip-wallet.enc" \
+  | EVM_RPC_BASE=http://localhost:8545 SWEEP_DRY_RUN=false npx tsx scripts/sweep-stablecoins.ts
+```
+
+How it works:
+1. Reads mnemonic from stdin (piped from decryption — never a CLI arg, never in shell history)
+2. Derives treasury address from internal chain (`m/44'/60'/0'/1/0`)
+3. Scans up to 200 deposit addresses for USDC balances
+4. Funds each deposit address with gas from treasury (~$0.001 per address on Base)
+5. Signs ERC-20 transfer from each deposit address to treasury
+6. Reports final treasury balance
+
+**Prerequisites:** treasury needs a small ETH balance on Base for gas. ~$0.20 covers 100 sweeps.
+
+**BTC sweep:** BTCPay has built-in sweep: Store → Wallets → BTC → Send → Sweep all.
+
+**After sweep:** move funds from treasury to exchange or cold storage as needed.
 
 **Security rules:**
 - xpubs are public — safe in env vars, repos, logs
