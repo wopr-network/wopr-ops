@@ -564,6 +564,8 @@ paperclip-platform fleet (Docker containers per tenant)
 | nbxplorer | nicolasdorier/nbxplorer:2.6.1 | — (internal) | Blockchain indexer |
 | btcpay | btcpayserver/btcpayserver:2.3.5 | 14142 | http://localhost:14142 (admin UI + API) |
 | seed | paperclip-managed:local | 3100 (internal) | N/A |
+| op-geth | oplabs op-geth:latest | 8545, 8546 | Base L2 node (JSON-RPC + WebSocket) |
+| op-node | oplabs op-node:latest | 9545 (internal) | Base L2 derivation pipe (reads from L1) |
 
 ### Caddy routing (local)
 
@@ -897,6 +899,93 @@ docker compose -f docker-compose.local.yml up -d --force-recreate platform
 - `BTCPAY_BASE_URL` points to the public BTCPay URL
 - No Bitcoin Core needed if using a pruned node or external source
 - Zero transaction fees (you own the server)
+
+### Self-hosted Base node (stablecoin payments)
+
+**Architecture decision:** We run our own Base L2 node from day one. No Alchemy, no Infura, no API keys, no rate limits, no vendor to rip out later. Same philosophy as BTCPay — we own the stack.
+
+**What it does:** The EVM watcher in platform-core polls `op-geth` for ERC-20 Transfer events (USDC on Base). When a user sends USDC to an HD-derived deposit address, the watcher detects the Transfer, confirms it, and credits the double-entry ledger via `Credit.fromCents()`.
+
+**Stack:** op-geth (Base execution client) + op-node (Base derivation pipe, reads from L1 Ethereum)
+
+**Docker compose services:**
+
+```yaml
+op-geth:
+  image: us-docker.pkg.dev/oplabs-tools-artifacts/images/op-geth:latest
+  volumes:
+    - base-geth-data:/data
+  ports:
+    - "8545:8545"
+    - "8546:8546"
+  command: >
+    --datadir=/data
+    --http --http.addr=0.0.0.0 --http.port=8545
+    --http.api=eth,net,web3
+    --ws --ws.addr=0.0.0.0 --ws.port=8546
+    --ws.api=eth,net,web3
+    --rollup.sequencerhttp=https://mainnet-sequencer.base.org
+    --rollup.historicalrpc=https://mainnet.base.org
+    --syncmode=snap
+  restart: unless-stopped
+
+op-node:
+  image: us-docker.pkg.dev/oplabs-tools-artifacts/images/op-node:latest
+  depends_on: [op-geth]
+  command: >
+    --l1=ws://geth:8546
+    --l2=http://op-geth:8551
+    --network=base-mainnet
+    --rpc.addr=0.0.0.0 --rpc.port=9545
+  restart: unless-stopped
+```
+
+**Disk requirements:** ~50GB for Base state, grows slowly. Much lighter than Ethereum mainnet (~1TB+).
+
+**Initial sync:** 2-6 hours depending on disk speed. After that, stays current within seconds.
+
+**Check sync status:**
+
+```bash
+curl -s http://localhost:8545 -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_syncing","id":1}' | jq .result
+# Returns false when fully synced, or sync progress object
+```
+
+**Check latest block (compare with https://basescan.org):**
+
+```bash
+curl -s http://localhost:8545 -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}' | jq -r '.result' | xargs printf "%d\n"
+```
+
+**L1 dependency:** op-node needs an L1 Ethereum RPC endpoint for the derivation pipe. For production, this should be our own geth instance. For initial deployment, a public L1 endpoint or Alchemy free tier is acceptable as a bootstrap — the L1 connection is read-only and low-volume (block headers only, not full transaction data).
+
+**EVM env vars (in platform `.env.local`):**
+
+| Key | Value | Purpose |
+|-----|-------|---------|
+| `EVM_RPC_BASE` | `http://op-geth:8545` | Base node RPC (docker internal) |
+| `EVM_XPUB` | Extended public key | HD wallet for deposit address derivation (xpub, NOT xprv) |
+
+**Troubleshooting:**
+- **op-geth falls behind:** restart the container, it will catch up from peers
+- **Disk full:** prune with `--gcmode=archive` disabled or increase disk
+- **op-node can't connect to L1:** check L1 RPC endpoint is reachable and not rate-limited
+- **No Transfer events detected:** verify USDC contract address matches Base mainnet (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`), check watcher `fromBlock` cursor
+
+**For local dev / CI:** Use Anvil (Foundry) with a Base mainnet fork instead of running the full node stack. Lighter, faster, no sync required:
+
+```yaml
+anvil:
+  image: ghcr.io/foundry-rs/foundry:latest
+  entrypoint: ["anvil"]
+  command: --fork-url https://mainnet.base.org --host 0.0.0.0 --port 8545
+  ports:
+    - "8545:8545"
+```
 
 ### Differences from WOPR local dev
 
