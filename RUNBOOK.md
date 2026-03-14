@@ -560,6 +560,9 @@ paperclip-platform fleet (Docker containers per tenant)
 | platform (API) | Built from ~/paperclip-platform | 3200 | http://api.runpaperclip.com:8080/health |
 | dashboard | Built from ~/paperclip-platform-ui | 3000 (via Caddy at 8080) | http://app.runpaperclip.com:8080 |
 | caddy | caddy:2-alpine | 8080 | Wildcard reverse proxy |
+| bitcoind | btcpayserver/bitcoin:30.2 | — (internal) | Bitcoin regtest node |
+| nbxplorer | nicolasdorier/nbxplorer:2.6.1 | — (internal) | Blockchain indexer |
+| btcpay | btcpayserver/btcpayserver:2.3.5 | 14142 | http://localhost:14142 (admin UI + API) |
 | seed | paperclip-managed:local | 3100 (internal) | N/A |
 
 ### Caddy routing (local)
@@ -678,6 +681,9 @@ Tested via curl through Caddy at `runpaperclip.com:8080`:
 | Landing page | `GET app.runpaperclip.com:8080` | PASS — Paperclip branding |
 | Signup | `POST api.runpaperclip.com:8080/api/auth/sign-up/email` | PASS — user created, `Domain=.runpaperclip.com` cookie |
 | $5 credits | `GET .../trpc/billing.creditsBalance` | PASS — `balance_cents: 500` ($5.00) |
+| Stripe checkout | `POST .../trpc/billing.creditsCheckout` | PASS — returns `checkout.stripe.com` URL |
+| Crypto checkout | `POST .../trpc/billing.cryptoCheckout` | PASS — BTCPay invoice created, charge stored (`amount_usd_cents=1000`) |
+| BTCPay invoice | `GET localhost:14142/api/v1/stores/.../invoices/...` | PASS — status `New`, $10 USD |
 | Fleet list | `GET .../trpc/fleet.listInstances` | PASS — `{"bots":[]}` |
 | Create instance | `POST .../trpc/fleet.createInstance?batch=1` | PASS — container running, healthy |
 | Tenant subdomain | `GET my-org.runpaperclip.com:8080` | PASS — Caddy → platform proxy → container UI |
@@ -786,8 +792,111 @@ Headless Chromium in WSL2 can navigate pages but `fetch()` from JS context fails
 
 - **Test keys:** `sk_test_*` from `~/wopr-platform/.env` — no real charges
 - **SDK initialized** when `STRIPE_SECRET_KEY` is set in `.env.local`
-- **Webhook routes:** not yet wired — credits can be manually granted via admin API for now
-- **Checkout flow:** not yet implemented
+- **Checkout flow:** `creditsCheckout` tRPC mutation creates a Stripe Checkout Session — returns `checkout.stripe.com` URL
+- **Webhook routes:** Stripe webhooks not yet wired — credits can be manually granted via admin API for now
+- **Same Stripe account** for WOPR and Paperclip is fine (key is account-scoped, not domain-scoped). Production needs separate price IDs (Paperclip branding) and a separate webhook endpoint (`whsec_*` is endpoint-specific).
+
+### BTCPay Server integration (crypto payments)
+
+**Architecture decision:** PayRam was the original crypto gateway but its site has broken SSL and appears defunct. Replaced with BTCPay Server — self-hosted, zero fees, zero vendor dependencies, open source, battle-tested. BTCPayClient in platform-core uses plain `fetch` to the Greenfield API v1 (no npm SDK dependency).
+
+**Stack:** bitcoind (regtest) → nbxplorer (blockchain indexer) → BTCPay Server → platform webhook
+
+**Credit flow (CRITICAL — read this):**
+1. User calls `billing.cryptoCheckout` tRPC mutation with `{ amountUsd: 10 }`
+2. Platform creates BTCPay invoice via `POST /api/v1/stores/{storeId}/invoices`
+3. Platform stores charge in `crypto_charges` table: `amount_usd_cents = 1000` (USD cents, integer, **NOT nanodollars**)
+4. User is redirected to BTCPay checkout page to pay in crypto
+5. BTCPay sends `InvoiceSettled` webhook to `POST /api/webhooks/crypto`
+6. Platform verifies HMAC signature (`BTCPAY-SIG` header)
+7. Platform calls `Credit.fromCents(charge.amountUsdCents)` — this converts cents → nanodollars
+8. Double-entry journal entry posted to ledger (balanced debit/credit)
+9. Charge marked as credited (idempotency flag prevents double-crediting)
+
+**Docker compose services (local dev):**
+
+| Service | Image | Port | Purpose |
+|---------|-------|------|---------|
+| bitcoind | btcpayserver/bitcoin:30.2 | — (internal) | Regtest Bitcoin node |
+| nbxplorer | nicolasdorier/nbxplorer:2.6.1 | — (internal) | Blockchain indexer for BTCPay |
+| btcpay | btcpayserver/btcpayserver:2.3.5 | 14142→23002 | BTCPay Server (admin UI + API) |
+
+All three share the existing postgres instance with separate databases (`nbxplorer`, `btcpayserver`) created by `scripts/create-multiple-databases.sh` on first startup.
+
+**BTCPay env vars (in `.env.local`):**
+
+| Key | Value | How to get it |
+|-----|-------|---------------|
+| `BTCPAY_API_KEY` | API key string | BTCPay UI → Account → API keys, or `POST /api/v1/api-keys` |
+| `BTCPAY_BASE_URL` | `http://btcpay:23002` | Docker internal URL (compose `environment:` overrides this) |
+| `BTCPAY_STORE_ID` | Store ID string | BTCPay UI → Store settings, or `POST /api/v1/stores` |
+| `BTCPAY_WEBHOOK_SECRET` | HMAC secret | Returned when creating webhook via `POST /api/v1/stores/{id}/webhooks` |
+
+**First-time BTCPay setup (after `docker compose up`):**
+
+```bash
+# 1. Create admin account
+curl -s -X POST http://localhost:14142/api/v1/users \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@runpaperclip.com","password":"<password>","isAdministrator":true}'
+
+# 2. Create API key (use basic auth — first-time only)
+curl -s -X POST http://localhost:14142/api/v1/api-keys \
+  -H "Content-Type: application/json" \
+  -u "admin@runpaperclip.com:<password>" \
+  -d '{"permissions":["btcpay.store.cancreateinvoice","btcpay.store.canviewinvoices","btcpay.store.canmodifyinvoices","btcpay.store.canmodifystoresettings","btcpay.store.webhooks.canmodifywebhooks","btcpay.store.canviewstoresettings","btcpay.store.cancreatepullpayments"],"label":"paperclip-platform"}'
+# → save apiKey from response
+
+# 3. Create store
+curl -s -X POST http://localhost:14142/api/v1/stores \
+  -H "Content-Type: application/json" \
+  -H "Authorization: token <apiKey>" \
+  -d '{"name":"Paperclip Credits"}'
+# → save id from response as BTCPAY_STORE_ID
+
+# 4. Generate regtest wallet (needs admin basic auth for hot wallet)
+curl -s -X POST "http://localhost:14142/api/v1/stores/<storeId>/payment-methods/onchain/BTC/generate" \
+  -H "Content-Type: application/json" \
+  -u "admin@runpaperclip.com:<password>" \
+  -d '{"savePrivateKeys":true,"wordCount":12}'
+
+# 5. Register webhook (points to platform's docker internal URL)
+curl -s -X POST "http://localhost:14142/api/v1/stores/<storeId>/webhooks" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: token <apiKey>" \
+  -d '{"url":"http://platform:3200/api/webhooks/crypto","authorizedEvents":{"everything":false,"specificEvents":["InvoiceSettled","InvoiceProcessing","InvoiceExpired","InvoiceInvalid"]}}'
+# → save secret from response as BTCPAY_WEBHOOK_SECRET
+
+# 6. Add to .env.local
+echo 'BTCPAY_API_KEY=<apiKey>' >> .env.local
+echo 'BTCPAY_STORE_ID=<storeId>' >> .env.local
+echo 'BTCPAY_WEBHOOK_SECRET=<secret>' >> .env.local
+
+# 7. Recreate platform to pick up new env vars
+docker compose -f docker-compose.local.yml up -d --force-recreate platform
+# Look for: "BTCPay crypto payments configured (webhook + checkout)"
+```
+
+**BTCPay Docker gotchas (hard-won, do NOT ignore):**
+
+- **bitcoind regtest ports are 18443 (RPC) and 18444 (P2P)** — the btcpayserver/docker repo uses non-standard ports (43782/39388) in their compose fragments. The raw `btcpayserver/bitcoin` image uses Bitcoin Core defaults. If nbxplorer can't connect, check the ports.
+- **nbxplorer binds to `127.0.0.1` by default** — set `NBXPLORER_BIND=0.0.0.0:32838` so other containers can reach it.
+- **BTCPay env var is `BTCPAY_BTCEXPLORERURL`** — NOT `BTCPAY_EXPLORERURL`. The chain prefix matters. Without it, BTCPay tries `127.0.0.1:24446` (the regtest default).
+- **BTCPay listens on port 23002** — NOT 49392. Set `BTCPAY_BIND=0.0.0.0:23002` and map `14142:23002` in compose.
+- **`environment:` overrides `env_file:`** — if you set `BTCPAY_API_KEY: ${BTCPAY_API_KEY:-}` in compose `environment:`, it reads from the shell env (empty), overriding `.env.local`. Let `env_file:` handle it. Only override `BTCPAY_BASE_URL` in compose (docker internal URL vs localhost).
+- **Postgres initdb scripts run only on first startup** — `scripts/create-multiple-databases.sh` creates `nbxplorer` and `btcpayserver` databases. If postgres volume already exists from before, wipe it: `docker volume rm paperclip-platform_postgres-data`.
+- **Hot wallet generation needs admin basic auth** — API key auth gets "This instance forbids non-admins from having a hot wallet". Use `-u admin@runpaperclip.com:<password>` instead.
+- **nbxplorer auto-mines 101 blocks on regtest** — first startup takes ~10 seconds while it mines blocks and syncs. BTCPay will show `synchronized: false` until nbxplorer is ready.
+- **BTCPay checkout URL is the internal docker URL** — `http://btcpay:23002/i/<invoiceId>` is only reachable from inside the docker network. For local dev, access the checkout page at `http://localhost:14142/i/<invoiceId>`. Production needs a public BTCPay URL.
+
+**Production BTCPay deployment:**
+
+- Self-hosted on the same DO droplet or a separate one
+- Connect a real BTC wallet (xpub key, NOT hot wallet)
+- Register webhook to `https://api.runpaperclip.com/api/webhooks/crypto`
+- `BTCPAY_BASE_URL` points to the public BTCPay URL
+- No Bitcoin Core needed if using a pruned node or external source
+- Zero transaction fees (you own the server)
 
 ### Differences from WOPR local dev
 
@@ -926,8 +1035,14 @@ Not yet deployed. Checklist for go-live:
 - [ ] .env with production secrets deployed to droplet
 - [ ] `OPENROUTER_API_KEY` set in production env (metered inference gateway)
 - [ ] `/data/fleet/meter-wal` and `/data/fleet/meter-dlq` directories writable
-- [ ] Stripe switched to live keys
-- [ ] Stripe webhook endpoint registered + checkout flow wired
-- [ ] BetterAuth URL set to https://api.runpaperclip.com (or appropriate)
+- [ ] Stripe switched to live keys + Paperclip-branded price IDs created
+- [ ] Stripe webhook endpoint registered (`https://api.runpaperclip.com/api/billing/webhook`) + new `whsec_*`
+- [ ] BTCPay Server deployed (same droplet or separate)
+- [ ] BTCPay: real BTC wallet connected (xpub, NOT hot wallet in production)
+- [ ] BTCPay: webhook registered pointing to `https://api.runpaperclip.com/api/webhooks/crypto`
+- [ ] BTCPay: `BTCPAY_API_KEY`, `BTCPAY_BASE_URL`, `BTCPAY_STORE_ID`, `BTCPAY_WEBHOOK_SECRET` in production env
+- [ ] BetterAuth URL set to https://api.runpaperclip.com
+- [ ] Resend: separate account with `runpaperclip.com` domain verified (don't share WOPR key in prod)
 - [ ] GHCR CI/CD pipeline for paperclip-platform + paperclip images
-- [ ] Smoke test: sign-up → pay → instance provisioned → subdomain accessible
+- [ ] Smoke test: sign-up → Stripe pay → credits → instance provisioned → subdomain accessible
+- [ ] Smoke test: sign-up → crypto pay → BTCPay invoice settled → credits → instance provisioned
