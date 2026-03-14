@@ -5,7 +5,7 @@
 ## Current State
 
 **Status:** PRE-PRODUCTION — not yet deployed to VPS
-**Last Updated:** 2026-03-05
+**Last Updated:** 2026-03-14
 **Last Operation:** Full DinD local dev stack online — VPS + GPU containers both healthy (2026-03-05). GPU: RTX 3070 8GB, CUDA 13.0. All 9 services healthy. GPU seeded — InferenceWatchdog confirmed llama, qwen, chatterbox, whisper all ok.
 
 ## Production Blockers (must resolve before go-live)
@@ -684,8 +684,8 @@ Tested via curl through Caddy at `runpaperclip.com:8080`:
 | Signup | `POST api.runpaperclip.com:8080/api/auth/sign-up/email` | PASS — user created, `Domain=.runpaperclip.com` cookie |
 | $5 credits | `GET .../trpc/billing.creditsBalance` | PASS — `balance_cents: 500` ($5.00) |
 | Stripe checkout | `POST .../trpc/billing.creditsCheckout` | PASS — returns `checkout.stripe.com` URL |
-| Crypto checkout | `POST .../trpc/billing.cryptoCheckout` | PASS — BTCPay invoice created, charge stored (`amount_usd_cents=1000`) |
-| BTCPay invoice | `GET localhost:14142/api/v1/stores/.../invoices/...` | PASS — status `New`, $10 USD |
+| Crypto checkout | `POST .../trpc/billing.checkout` | PASS — deposit address returned, charge stored (`amount_usd_cents=1000`) |
+| Payment methods | `GET .../trpc/billing.supportedPaymentMethods` | PASS — returns enabled methods from DB |
 | Fleet list | `GET .../trpc/fleet.listInstances` | PASS — `{"bots":[]}` |
 | Create instance | `POST .../trpc/fleet.createInstance?batch=1` | PASS — container running, healthy |
 | Tenant subdomain | `GET my-org.runpaperclip.com:8080` | PASS — Caddy → platform proxy → container UI |
@@ -798,62 +798,127 @@ Headless Chromium in WSL2 can navigate pages but `fetch()` from JS context fails
 - **Webhook routes:** Stripe webhooks not yet wired — credits can be manually granted via admin API for now
 - **Same Stripe account** for WOPR and Paperclip is fine (key is account-scoped, not domain-scoped). Production needs separate price IDs (Paperclip branding) and a separate webhook endpoint (`whsec_*` is endpoint-specific).
 
-### BTCPay Server integration (crypto payments) — BEING REPLACED
+### Unified crypto checkout API
 
-> **BTCPay is being replaced by native bitcoind watcher (PR #57).** The native watcher talks to bitcoind directly — eliminates nbxplorer and btcpayserver containers (3 → 1). Same xpub, same mnemonic, same ledger. BTCPay docs below are kept for reference until migration is complete.
+**Single endpoint for all crypto payments.** The old per-method endpoints (`cryptoCheckout`, `stablecoinCheckout`, `ethCheckout`) have been replaced by a unified `billing.checkout` tRPC mutation.
 
-**Architecture decision:** PayRam was the original crypto gateway but its site has broken SSL and appears defunct. Replaced with BTCPay Server — self-hosted, zero fees, zero vendor dependencies, open source, battle-tested. BTCPayClient in platform-core uses plain `fetch` to the Greenfield API v1 (no npm SDK dependency).
+**API:**
+```typescript
+// Client call:
+createCheckout(methodId: string, amountUsd: number) → CheckoutResult
 
-**Stack:** bitcoind (regtest) → nbxplorer (blockchain indexer) → BTCPay Server → platform webhook
+// tRPC mutation:
+billing.checkout({ methodId: "usdc:base", amountUsd: 50 })
+```
+
+**Response shape:**
+```typescript
+{
+  depositAddress: "0x23Edd02...",  // HD-derived deposit address
+  displayAmount: "50.000000 USDC", // human-readable amount to send
+  token: "USDC",
+  chain: "base",
+  priceCents?: 350000,            // only for oracle-priced assets (ETH, BTC)
+}
+```
+
+**Routing by method type:**
+| Method type | Example | Price source | Amount logic |
+|-------------|---------|-------------|--------------|
+| `erc20` | USDC, USDT, DAI | 1:1 USD (stablecoins) | `amountUsd * 10^decimals` raw units |
+| `native` (ETH) | ETH on Base | Chainlink on-chain oracle | `centsToNative(amountCents, priceCents, 18)` |
+| `native` (BTC) | BTC | Chainlink on-chain oracle | `centsToNative(amountCents, priceCents, 8)` |
 
 **Credit flow (CRITICAL — read this):**
-1. User calls `billing.cryptoCheckout` tRPC mutation with `{ amountUsd: 10 }`
-2. Platform creates BTCPay invoice via `POST /api/v1/stores/{storeId}/invoices`
-3. Platform stores charge in `crypto_charges` table: `amount_usd_cents = 1000` (USD cents, integer, **NOT nanodollars**)
-4. User is redirected to BTCPay checkout page to pay in crypto
-5. BTCPay sends `InvoiceSettled` webhook to `POST /api/webhooks/crypto`
-6. Platform verifies HMAC signature (`BTCPAY-SIG` header)
-7. Platform calls `Credit.fromCents(charge.amountUsdCents)` — this converts cents → nanodollars
-8. Double-entry journal entry posted to ledger (balanced debit/credit)
-9. Charge marked as credited (idempotency flag prevents double-crediting)
+1. User calls `billing.checkout` with `{ methodId, amountUsd }`
+2. Platform looks up method in `payment_methods` table (DB-driven, not hardcoded)
+3. For oracle-priced assets: fetches price from Chainlink on-chain feed
+4. Derives HD deposit address from xpub (per-charge, indexed by charge row ID)
+5. Stores charge in `crypto_charges` table: `amount_usd_cents` (integer, **NOT nanodollars**)
+6. Returns deposit address + expected amount to UI (no redirect — address shown inline)
+7. Watcher detects incoming transfer (see Watcher Architecture below)
+8. Settler calls `Credit.fromCents(charge.amountUsdCents)` — converts cents → nanodollars
+9. Double-entry journal entry posted to ledger (balanced debit/credit)
+10. Charge marked as credited (idempotency flag prevents double-crediting)
 
-**Docker compose services (local dev):**
+### Payment method registry (admin-managed)
 
-| Service | Image | Port | Purpose |
-|---------|-------|------|---------|
-| bitcoind | btcpayserver/bitcoin:30.2 | — (internal) | Regtest Bitcoin node |
-| nbxplorer | nicolasdorier/nbxplorer:2.6.1 | — (internal) | Blockchain indexer for BTCPay |
-| btcpay | btcpayserver/btcpayserver:2.3.5 | 14142→23002 | BTCPay Server (admin UI + API) |
+Payment methods are stored in the `payment_methods` DB table — no deploys needed to add or disable tokens.
 
-All three share the existing postgres instance with separate databases (`nbxplorer`, `btcpayserver`) created by `scripts/create-multiple-databases.sh` on first startup.
+**Schema:**
+| Column | Type | Purpose |
+|--------|------|---------|
+| `id` | text PK | e.g. `usdc:base`, `eth:base`, `btc:bitcoin` |
+| `type` | text | `erc20` or `native` |
+| `token` | text | Display name: `USDC`, `ETH`, `BTC` |
+| `chain` | text | `base`, `bitcoin`, etc. |
+| `contract_address` | text (nullable) | ERC-20 contract. Null for native assets. |
+| `decimals` | integer | Token decimals (6 for USDC, 18 for ETH, 8 for BTC) |
+| `enabled` | boolean | Toggle without removing |
+| `display_order` | integer | UI sort order |
+| `confirmations` | integer | Required block confirmations |
 
-**BTCPay env vars (in `.env.local`):**
+**Seeded methods:** USDC, USDT, DAI (type `erc20`), ETH (type `native`), BTC (type `native`)
 
-| Key | Value | How to get it |
-|-----|-------|---------------|
-| `BTCPAY_API_KEY` | API key string | BTCPay UI → Account → API keys, or `POST /api/v1/api-keys` |
-| `BTCPAY_BASE_URL` | `http://btcpay:23002` | Docker internal URL (compose `environment:` overrides this) |
-| `BTCPAY_STORE_ID` | Store ID string | BTCPay UI → Store settings, or `POST /api/v1/stores` |
-| `BTCPAY_WEBHOOK_SECRET` | HMAC secret | Returned when creating webhook via `POST /api/v1/stores/{id}/webhooks` |
+**Admin API (tRPC):**
+- `billing.adminListPaymentMethods` — list all methods (enabled + disabled)
+- `billing.adminUpsertPaymentMethod` — add or update a method
+- `billing.adminTogglePaymentMethod` — enable/disable by ID
 
-**First-time BTCPay setup (after `docker compose up`):**
+**Admin UI:** `/admin/payment-methods` page in platform-ui-core. Table view with enable/disable toggles and add-new form.
 
-```bash
-# 1. Create admin account
-curl -s -X POST http://localhost:14142/api/v1/users \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@runpaperclip.com","password":"<password>","isAdministrator":true}'
+**Public API:**
+- `billing.supportedPaymentMethods` — list only enabled methods (used by checkout UI)
 
-# 2. Create API key (use basic auth — first-time only)
-curl -s -X POST http://localhost:14142/api/v1/api-keys \
-  -H "Content-Type: application/json" \
-  -u "admin@runpaperclip.com:<password>" \
-  -d '{"permissions":["btcpay.store.cancreateinvoice","btcpay.store.canviewinvoices","btcpay.store.canmodifyinvoices","btcpay.store.canmodifystoresettings","btcpay.store.webhooks.canmodifywebhooks","btcpay.store.canviewstoresettings","btcpay.store.cancreatepullpayments"],"label":"paperclip-platform"}'
-# → save apiKey from response
+### Chainlink on-chain price oracle
 
-# 3. Create store
-curl -s -X POST http://localhost:14142/api/v1/stores \
-  -H "Content-Type: application/json" \
+**No API keys. No vendor accounts.** Reads `latestRoundData()` from Chainlink aggregator contracts via `eth_call` on Base.
+
+**Feeds (Base mainnet):**
+| Pair | Contract | Decimals |
+|------|----------|----------|
+| ETH/USD | `0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70` | 8 |
+| BTC/USD | `0x64c911996D3c6aC71f9b455B1E8E7266BcbD848F` | 8 |
+
+**Conversion:** `answer / 10^6` = USD cents (integer). Staleness guard: rejects prices older than 1 hour.
+
+**Conversion functions (platform-core):**
+- `centsToNative(amountCents, priceCents, decimals)` → BigInt raw amount
+- `nativeToCents(rawAmount, priceCents, decimals)` → integer cents
+
+### Watcher architecture
+
+Three watcher types poll their respective chains for incoming payments. All use DB-persisted cursors — no in-memory state survives restart.
+
+| Watcher | Class | What it watches | Cursor |
+|---------|-------|----------------|--------|
+| EVM (ERC-20) | `EvmWatcher` | `eth_getLogs` for ERC-20 Transfer events | Block number in `watcher_cursors` |
+| ETH (native) | `EthWatcher` | `eth_getBlockByNumber` scanning tx `to` + `value` | Block number in `watcher_cursors` |
+| BTC | `BtcWatcher` | bitcoind `listsinceblock` RPC | Block hash in `watcher_cursors` + txid dedup in `watcher_processed` |
+
+**Cursor persistence tables:**
+- `watcher_cursors`: `(watcher_id TEXT PK, cursor TEXT, updated_at)` — stores block number/hash per watcher
+- `watcher_processed`: `(watcher_id TEXT, tx_id TEXT, PK(watcher_id, tx_id))` — BTC txid dedup (prevents double-credit on restart)
+
+**EVM watcher saves cursor per-block** (groups logs by block number, checkpoints after each block). If it crashes mid-range, it re-scans only from the last checkpointed block.
+
+**Settler pattern:** All three settlers share the same idempotency model:
+1. Look up charge by deposit address → if not found, return `status: "Invalid"` (not "Settled")
+2. Check `creditRef` uniqueness (e.g. `erc20:base:0xabc...`, `eth:base:0xdef...`, `btc:txid`)
+3. Call `Credit.fromCents()` → nanodollars → double-entry journal
+4. Mark charge as credited
+
+**NOT YET WIRED:** The watchers exist as classes but `initCryptoWatchers()` (startup loop) and settler wiring (onPayment → settle) are not built yet. See shipping gaps below.
+
+### Crypto shipping gaps (as of 2026-03-14)
+
+1. **Watcher startup loop** — need `initCryptoWatchers()` in paperclip-platform that reads enabled methods from DB, creates watcher instances, runs `poll()` on interval, wires `onPayment` → settler
+2. **Settler wiring** — `onPayment` callbacks need to call `settleEvmPayment`/`settleEthPayment`/`settleBtcPayment`
+3. **Payment status polling** — UI shows deposit address but can't tell user when confirmed. Need `billing.chargeStatus` tRPC query
+
+### BTCPay Server (REPLACED — reference only)
+
+> **BTCPay has been replaced by native watchers.** The native BTC watcher talks to bitcoind directly — eliminates nbxplorer and btcpayserver containers (3 → 1). Same xpub, same mnemonic, same ledger. BTCPay docs below are kept for historical reference only.
   -H "Authorization: token <apiKey>" \
   -d '{"name":"Paperclip Credits"}'
 # → save id from response as BTCPAY_STORE_ID
@@ -902,11 +967,11 @@ docker compose -f docker-compose.local.yml up -d --force-recreate platform
 - No Bitcoin Core needed if using a pruned node or external source
 - Zero transaction fees (you own the server)
 
-### Self-hosted Base node (stablecoin payments)
+### Self-hosted Base node (EVM payments — ERC-20 + native ETH)
 
-**Architecture decision:** We run our own Base L2 node from day one. No Alchemy, no Infura, no API keys, no rate limits, no vendor to rip out later. Same philosophy as BTCPay — we own the stack.
+**Architecture decision:** We run our own Base L2 node from day one. No Alchemy, no Infura, no API keys, no rate limits, no vendor to rip out later. Same philosophy as the native BTC watcher — we own the stack.
 
-**What it does:** The EVM watcher in platform-core polls `op-geth` for ERC-20 Transfer events (USDC on Base). When a user sends USDC to an HD-derived deposit address, the watcher detects the Transfer, confirms it, and credits the double-entry ledger via `Credit.fromCents()`.
+**What it does:** Two watchers poll `op-geth`: the EVM watcher scans `eth_getLogs` for ERC-20 Transfer events (USDC, USDT, DAI — any enabled ERC-20 from the payment method registry). The ETH watcher scans `eth_getBlockByNumber` for native ETH transfers to deposit addresses. Both credit the double-entry ledger via `Credit.fromCents()`.
 
 **Stack:** op-geth (Base execution client) + op-node (Base derivation pipe, reads from L1 Ethereum)
 
@@ -1023,16 +1088,16 @@ $CAST call $USDC "balanceOf(address)(uint256)" $DEPOSIT --rpc-url http://localho
 
 **E2E test script:** `wopr-ops/scripts/test-payments-e2e.sh` (tests both BTC regtest + stablecoin Anvil fork)
 
-### Unified HD wallet (BTC + stablecoins)
+### Unified HD wallet (BTC + ERC-20 + ETH)
 
-**One mnemonic, two derivation paths.** A single 24-word BIP-39 mnemonic backs up both BTC (BTCPay) and stablecoin (EVM watcher) wallets. Server has only xpubs (public keys). Private keys never touch the server.
+**One mnemonic, two derivation paths.** A single 24-word BIP-39 mnemonic backs up BTC, ERC-20 (stablecoins), and native ETH wallets. Server has only xpubs (public keys). Private keys never touch the server.
 
 **Derivation paths:**
 
 | Asset | BIP-44 Path | xpub env var | Where used |
 |-------|-------------|-------------|------------|
-| BTC | `m/44'/0'/0'` | BTCPay store config | BTCPay Server on-chain wallet |
-| EVM (stablecoins) | `m/44'/60'/0'` | `EVM_XPUB` | Platform EVM watcher deposit addresses |
+| BTC | `m/44'/0'/0'` | BTCPay store config / native BTC watcher | BTC deposit addresses |
+| EVM (ERC-20 + ETH) | `m/44'/60'/0'` | `EVM_XPUB` | EVM + ETH watcher deposit addresses (shared path) |
 
 **Current xpubs:**
 - **BTC**: `xpub6BuGg4sQuvoA7q545ZoStxU7QP24qmZNMo39FxRjLwbBCQ77sjsHGcpxeNVboGZQNdbeANHVK1GJx7ECMfjohkpLqoGLVP9SCQM4bR1F5vh`
@@ -1057,7 +1122,7 @@ This replaces the hot wallet with our xpub — BTCPay derives deposit addresses 
 2. Decrypt: `openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d -pass pass:<passphrase> -in paperclip-wallet.enc`
 3. Import the 24-word mnemonic into any BIP-39 compatible wallet (MetaMask, Electrum, Rabby, etc.)
 4. BTC funds: derivation path `m/44'/0'/0'` — use Electrum or any BIP-44 BTC wallet
-5. Stablecoin funds: derivation path `m/44'/60'/0'` — use MetaMask/Rabby
+5. EVM funds (stablecoins + ETH): derivation path `m/44'/60'/0'` — use MetaMask/Rabby
 6. Re-derive xpubs if needed:
    - BTC: `HDKey.fromMasterSeed(mnemonicToSeedSync(mnemonic)).derive("m/44'/0'/0'").publicExtendedKey`
    - EVM: `HDKey.fromMasterSeed(mnemonicToSeedSync(mnemonic)).derive("m/44'/60'/0'").publicExtendedKey`
@@ -1068,12 +1133,12 @@ Derived from the same mnemonic on the internal chain (BIP-44 chain index 1), sep
 
 | Asset | Path | Address |
 |-------|------|---------|
-| EVM stablecoins | `m/44'/60'/0'/1/0` | `0x6cEff0F47d5d918e50Fd40f7611f673a13edA06d` |
-| BTC | First internal address from BTCPay | (derived by BTCPay from the xpub) |
+| EVM (ERC-20 + ETH) | `m/44'/60'/0'/1/0` | `0x6cEff0F47d5d918e50Fd40f7611f673a13edA06d` |
+| BTC | First internal address from xpub | (derived from the BTC xpub) |
 
 **Sweep protocol:**
 
-Stablecoin sweep script: `wopr-ops/scripts/sweep-stablecoins.ts`
+EVM sweep script: `wopr-ops/scripts/sweep-stablecoins.ts` (handles ETH + all ERC-20s)
 
 ```bash
 # Dry run (default — scans balances, no transactions):
@@ -1087,17 +1152,16 @@ openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d \
   | EVM_RPC_BASE=http://localhost:8545 SWEEP_DRY_RUN=false npx tsx scripts/sweep-stablecoins.ts
 ```
 
-How it works:
-1. Reads mnemonic from stdin (piped from decryption — never a CLI arg, never in shell history)
-2. Derives treasury address from internal chain (`m/44'/60'/0'/1/0`)
-3. Scans up to 200 deposit addresses for USDC balances
-4. Funds each deposit address with gas from treasury (~$0.001 per address on Base)
-5. Signs ERC-20 transfer from each deposit address to treasury
-6. Reports final treasury balance
+**3-phase sweep (solves chicken-and-egg gas problem):**
+1. **Phase 1 — Sweep ETH deposits** (self-funded gas). Native ETH transfers cost 21k gas. The deposit address pays its own gas from its ETH balance. No treasury funding needed.
+2. **Phase 2 — Fund gas from treasury.** Treasury now has ETH from phase 1. Script tops up each ERC-20 deposit address with just enough ETH for one `transfer()` call (~65k gas, ~$0.004 on Base L2).
+3. **Phase 3 — Sweep all ERC-20s** (USDC, USDT, DAI). Each deposit address now has gas. Script signs `transfer()` from each deposit to treasury.
 
-**Prerequisites:** treasury needs a small ETH balance on Base for gas. ~$0.20 covers 100 sweeps.
+**Why ETH-first:** If the treasury starts empty (no ETH for gas), you can't fund ERC-20 deposit addresses. But ETH deposits self-fund their own sweep. Sweeping ETH first fills the treasury, then you can fund gas for ERC-20 sweeps.
 
-**BTC sweep:** BTCPay has built-in sweep: Store → Wallets → BTC → Send → Sweep all.
+**Gas costs on Base L2:** ~$0.0013 per ETH transfer, ~$0.004 per ERC-20 transfer. 200 addresses ≈ $0.27 total. Gas price volatility is not a real failure mode on L2 (~0.01 gwei).
+
+**BTC sweep:** Manual via wallet software (Electrum). Import xpub, sweep all to cold storage.
 
 **After sweep:** move funds from treasury to exchange or cold storage as needed.
 
@@ -1105,7 +1169,7 @@ How it works:
 - xpubs are public — safe in env vars, repos, logs
 - Mnemonic is the master key — NEVER on the server, NEVER in a repo, NEVER in plaintext on disk
 - If the server is compromised, funds in deposit addresses are safe (attacker can see addresses but can't sign)
-- If the mnemonic is compromised, ALL funds in ALL derived addresses (BTC + stablecoins) are at risk — sweep immediately
+- If the mnemonic is compromised, ALL funds in ALL derived addresses (BTC + ERC-20 + ETH) are at risk — sweep immediately
 
 ### Differences from WOPR local dev
 
@@ -1250,11 +1314,12 @@ Not yet deployed. Checklist for go-live:
 - [ ] Stripe switched to live keys + Paperclip-branded price IDs created
 - [ ] Stripe webhook endpoint registered (`https://api.runpaperclip.com/api/billing/webhook`) + new `whsec_*`
 - [ ] BTCPay Server deployed (same droplet or separate)
-- [ ] BTCPay: real BTC wallet connected (xpub, NOT hot wallet in production)
-- [ ] BTCPay: webhook registered pointing to `https://api.runpaperclip.com/api/webhooks/crypto`
+- [ ] BTC watcher: xpub configured (same mnemonic, `m/44'/0'/0'` path)
+- [ ] EVM watcher: `EVM_XPUB` set + Base node synced
+- [ ] Payment methods seeded in DB (USDC, USDT, DAI, ETH, BTC)
 - [ ] BTCPay: `BTCPAY_API_KEY`, `BTCPAY_BASE_URL`, `BTCPAY_STORE_ID`, `BTCPAY_WEBHOOK_SECRET` in production env
 - [ ] BetterAuth URL set to https://api.runpaperclip.com
 - [ ] Resend: separate account with `runpaperclip.com` domain verified (don't share WOPR key in prod)
 - [ ] GHCR CI/CD pipeline for paperclip-platform + paperclip images
 - [ ] Smoke test: sign-up → Stripe pay → credits → instance provisioned → subdomain accessible
-- [ ] Smoke test: sign-up → crypto pay → BTCPay invoice settled → credits → instance provisioned
+- [ ] Smoke test: sign-up → crypto pay → watcher detects transfer → credits → instance provisioned
