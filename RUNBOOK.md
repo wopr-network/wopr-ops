@@ -512,33 +512,82 @@ White-label deployment of the WOPR platform stack for Paperclip AI. Uses `@wopr-
 
 ### Current State
 
-**Status:** LOCAL DEV ONLY — not yet deployed to production
-**Last Updated:** 2026-03-12
-**Last Operation:** Full e2e verified: `hostedMode: true` in health, provisioned admin user signs in with correct email, tenant proxy routes `testbot.localhost:8080` → container. Fixed fleet.ts to look up user email/name from DB (was falling back to `${name}@runpaperclip.com` because `AuthUser` only has `{id, roles}`).
+**Status:** LOCAL DEV — full happy path E2E verified (2026-03-14)
+**Last Updated:** 2026-03-14
+**Last Verified:** Signup → $5 credits → create instance → tenant subdomain proxy — all green through `runpaperclip.com` domain via `/etc/hosts`.
+
+### Dependency Graph (CRITICAL — read this first)
+
+We own everything except Node, Docker, Hono, Next.js, and third-party libs. Every bug gets fixed at source, published, and updated downstream. **Never work around our own code.**
+
+```
+platform-core (npm @wopr-network/platform-core, v1.14.4, semantic-release)
+  ↓ consumed by
+paperclip-platform (Hono API)         platform-ui-core (npm @wopr-network/platform-ui-core, v1.1.3, tag-triggered publish)
+                                        ↓ consumed by
+                                      paperclip-platform-ui (thin Next.js shell, pnpm)
+
+paperclip (managed bot image, Docker Hub tsavo/paperclip-managed:local)
+  ↓ pulled by fleet at container create time (docker pull, NOT local cache)
+paperclip-platform fleet (Docker containers per tenant)
+```
+
+**Fix → Publish → Update downstream:**
+
+| Owning Repo | How to Publish | Downstream Update |
+|-------------|---------------|-------------------|
+| platform-core | Merge to main → semantic-release auto-publishes | `cd ~/paperclip-platform && npm update @wopr-network/platform-core && docker compose up --build platform` |
+| platform-ui-core | `git tag v1.x.y && git push --tags` → CI publishes to npm | `cd ~/paperclip-platform-ui && pnpm update @wopr-network/platform-ui-core && cd ~/paperclip-platform && docker compose up --build dashboard` |
+| paperclip (managed image) | `cd ~/paperclip && docker build -t tsavo/paperclip-managed:local -f Dockerfile.managed . && docker push tsavo/paperclip-managed:local` | `cd ~/paperclip-platform && docker compose down -v && docker compose up --build` (fleet pulls on create) |
+| paperclip-platform | Rebuild Docker: `docker compose up --build platform` | N/A (leaf node) |
+| paperclip-platform-ui | Rebuild Docker: `docker compose up --build dashboard` | N/A (leaf node) |
 
 ### Repositories
 
-| Repo | Local Path | Purpose |
-|------|-----------|---------|
-| wopr-network/paperclip-platform | ~/paperclip-platform | Hono API — fleet, billing, auth, tenant proxy |
-| wopr-network/platform-ui-core | ~/platform-ui-core | Brand-agnostic Next.js dashboard |
-| wopr-network/paperclip | ~/paperclip | Managed Paperclip bot — one container per tenant |
+| Repo | Local Path | npm Package | Purpose |
+|------|-----------|-------------|---------|
+| wopr-network/platform-core | ~/platform-core | @wopr-network/platform-core (v1.14.4) | Shared backend: DB, auth, billing, fleet, gateway |
+| wopr-network/platform-ui-core | ~/platform-ui-core | @wopr-network/platform-ui-core (v1.1.3) | Brand-agnostic Next.js UI (dashboard, auth pages) |
+| wopr-network/paperclip-platform | ~/paperclip-platform | — | Hono API — fleet, billing, auth, tenant proxy |
+| wopr-network/paperclip-platform-ui | ~/paperclip-platform-ui | — | Paperclip dashboard — thin shell on platform-ui-core |
+| wopr-network/paperclip | ~/paperclip | — | Managed bot image (Docker Hub: tsavo/paperclip-managed) |
 
 ### Stack (local dev)
 
 | Service | Image | Port | URL |
 |---------|-------|------|-----|
 | postgres | postgres:16-alpine | 5433 (mapped from 5432) | localhost:5433 |
-| platform (API) | Built from ~/paperclip-platform | 3200 | http://localhost:3200/health |
-| dashboard | Built from ~/platform-ui-core | 3000 (via Caddy at 8080) | http://app.localhost:8080 |
-| caddy | caddy:2-alpine | 8080 | http://app.localhost:8080 |
+| platform (API) | Built from ~/paperclip-platform | 3200 | http://api.runpaperclip.com:8080/health |
+| dashboard | Built from ~/paperclip-platform-ui | 3000 (via Caddy at 8080) | http://app.runpaperclip.com:8080 |
+| caddy | caddy:2-alpine | 8080 | Wildcard reverse proxy |
 | seed | paperclip-managed:local | 3100 (internal) | N/A |
+
+### Caddy routing (local)
+
+| URL Pattern | Destination | Purpose |
+|-------------|-------------|---------|
+| http://app.runpaperclip.com:8080 | dashboard:3000 | Dashboard UI |
+| http://api.runpaperclip.com:8080 | platform:3200 | Platform API |
+| http://runpaperclip.com:8080 | redirect → app | Root domain redirect |
+| http://*.runpaperclip.com:8080 | platform:3200 | Tenant subdomain → platform auth proxy → container |
+
+### /etc/hosts (REQUIRED for local dev)
+
+```
+# Paperclip local dev — real domain, real cookie sharing
+127.0.0.1 runpaperclip.com app.runpaperclip.com api.runpaperclip.com
+# Add per-instance as you create them:
+127.0.0.1 my-org.runpaperclip.com
+```
+
+**Why not `*.localhost`?** Browser cookies with `Domain=localhost` do NOT share to `*.localhost` subdomains. Using the real domain with `/etc/hosts` enables `Domain=.runpaperclip.com` cookies to share across `app.`, `api.`, and tenant subdomains — exactly like production.
 
 ### Prerequisites
 
 1. **Docker + Docker Compose** — verify with `docker compose version`
-2. **All three repos cloned** — `~/paperclip-platform`, `~/platform-ui-core`, `~/paperclip`
+2. **All repos cloned as siblings** — `~/paperclip-platform`, `~/paperclip-platform-ui`, `~/platform-ui-core`, `~/paperclip`
 3. **Stripe test keys** — copy `sk_test_*` and `whsec_*` from `~/wopr-platform/.env`
+4. **/etc/hosts entries** — see above
 
 ### First-time setup
 
@@ -554,15 +603,24 @@ cp .env.local.example .env.local
 openssl rand -hex 32   # paste as BETTER_AUTH_SECRET
 openssl rand -hex 32   # paste as PROVISION_SECRET (or keep the default for local)
 
-# 3. Build the managed Paperclip image (MUST build from ~/paperclip context)
+# 3. Key .env.local settings for runpaperclip.com local dev:
+#    PLATFORM_DOMAIN=runpaperclip.com
+#    COOKIE_DOMAIN=.runpaperclip.com
+#    UI_ORIGIN=http://app.runpaperclip.com:8080
+#    BETTER_AUTH_URL=http://api.runpaperclip.com:8080
+#    NEXT_PUBLIC_API_URL=http://api.runpaperclip.com:8080
+#    NEXT_PUBLIC_BRAND_DOMAIN=runpaperclip.com
+#    NEXT_PUBLIC_BRAND_APP_DOMAIN=app.runpaperclip.com:8080
+#    PAPERCLIP_IMAGE=tsavo/paperclip-managed:local
+
+# 4. Build the managed Paperclip image (MUST build from ~/paperclip context)
 cd ~/paperclip
 docker build --provenance=false --sbom=false -f Dockerfile.managed -t tsavo/paperclip-managed:local .
 # Push to Docker Hub (fleet's pullImage() pulls on every container create)
 docker push tsavo/paperclip-managed:local
 
-# 4. Start the stack
-bash scripts/local-test.sh
-# or manually:
+# 5. Start the stack
+cd ~/paperclip-platform
 docker compose -f docker-compose.local.yml up --build
 ```
 
@@ -581,21 +639,45 @@ bash scripts/local-test.sh
 
 ### What happens on startup
 
-The platform API (`src/index.ts`) runs this sequence in the serve callback:
+The platform API (`src/index.ts`) runs this sequence **BEFORE calling `serve()`**:
 
 1. Check `DATABASE_URL` is set (provided by docker-compose)
 2. Create Postgres pool + Drizzle DB instance
 3. Run platform-core Drizzle migrations (`src/db/migrate.ts`)
-4. Initialize BetterAuth with `initBetterAuth({ pool, db })`
-5. Run BetterAuth migrations
-6. Wire `DrizzleCreditLedger` → `setCreditLedger()` (billing gate)
+4. Wire `DrizzleLedger` → `setCreditLedger()` (double-entry credit ledger)
+5. Initialize BetterAuth with `initBetterAuth({ pool, db, onUserCreated })` — `onUserCreated` grants $5 signup credits via `grantSignupCredits()`
+6. Run BetterAuth migrations
 7. Wire `DrizzleUserRoleRepository` → `setUserRoleRepo()` (admin auth)
-8. **Wire metered inference gateway** (`wireGateway()`) — mounts `/v1/*` routes, creates `MeterEmitter` + `BudgetChecker` + `DrizzleServiceKeyRepository` for DB-backed per-instance gateway keys
+8. **Mount inference gateway** (`mountGateway(app, ...)`) — adds `/v1/*` routes, creates `MeterEmitter` + `BudgetChecker` + `DrizzleServiceKeyRepository`
 9. Wire tRPC router dependencies (billing, settings, profile, page-context, org)
-10. Initialize Stripe SDK if `STRIPE_SECRET_KEY` is set (webhook routes TBD)
-11. Start ProxyManager → Caddy sync
-12. Hydrate routes from running Docker containers
-13. Start health monitor
+10. Initialize Stripe SDK if `STRIPE_SECRET_KEY` is set
+11. **THEN call `serve()`** — HTTP server starts accepting connections
+12. Start ProxyManager → Caddy sync
+13. Hydrate proxy routes from running Docker containers
+14. Start health monitor
+
+**CRITICAL: steps 1-10 MUST complete before `serve()`.** If `mountGateway()` is called after `serve()`, Hono's lazy matcher build races with incoming requests (Docker healthcheck hits the server during async init) and throws "Can not add a route since the matcher is already built." This was the root cause of the fleet listing bug fixed 2026-03-14.
+
+### Credit system rules (INVARIANT)
+
+- **Integer math only** — credit values are nanodollars. Never floating point for money.
+- **Balanced journal entries** — every mutation posts `sum(debits) === sum(credits)`.
+- **API boundary** — backend sends `balance_credits` (in cents). UI divides by 100 for display.
+- **Idempotent grants** — `grantSignupCredits` uses `referenceId` dedup.
+- **Any violation is a bug** — fix immediately.
+
+### Verified E2E Happy Path (2026-03-14)
+
+Tested via curl through Caddy at `runpaperclip.com:8080`:
+
+| Step | Endpoint | Result |
+|------|----------|--------|
+| Landing page | `GET app.runpaperclip.com:8080` | PASS — Paperclip branding |
+| Signup | `POST api.runpaperclip.com:8080/api/auth/sign-up/email` | PASS — user created, `Domain=.runpaperclip.com` cookie |
+| $5 credits | `GET .../trpc/billing.creditsBalance` | PASS — `balance_credits: 500` ($5.00) |
+| Fleet list | `GET .../trpc/fleet.listInstances` | PASS — `{"bots":[]}` |
+| Create instance | `POST .../trpc/fleet.createInstance?batch=1` | PASS — container running, healthy |
+| Tenant subdomain | `GET my-org.runpaperclip.com:8080` | PASS — Caddy → platform proxy → container UI |
 
 ### Health checks
 
