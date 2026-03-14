@@ -743,6 +743,9 @@ Beyond the obvious Stripe/DB/auth keys, these are easy to miss:
 |-----|--------|-----|
 | `RESEND_API_KEY` | Copy from `~/wopr-platform/.env` | Verification emails. Without it: signup works but logs "RESEND_API_KEY environment variable is required" on every account creation. |
 | `RESEND_FROM_EMAIL` | `noreply@runpaperclip.com` | Sender address. Must match a verified domain in Resend. For local dev, the shared WOPR key works. Production needs its own key with `runpaperclip.com` verified. |
+| `STRIPE_DEFAULT_PRICE_ID` | Copy from `~/wopr-platform/.env` | Default subscription price. Without it: plan upgrade flow fails. |
+| `STRIPE_CREDIT_PRICE_*` (5 vars) | Copy from `~/wopr-platform/.env` | Credit tiers ($5-$100). Without them: `creditOptions` returns empty, checkout unavailable. |
+| `EXTRA_ALLOWED_REDIRECT_ORIGINS` | `http://app.runpaperclip.com:8080` | Stripe checkout return URL allowlist. Without it: checkout returns "Invalid redirect URL". |
 | `CADDY_ADMIN_URL` | Set empty (`""`) | Prevents ProxyManager from overwriting the Caddyfile wildcard. |
 | `UI_ORIGIN` | `http://app.runpaperclip.com:8080,http://localhost:3000,http://127.0.0.1:3000` | CORS allowlist. Missing origins = signup/login fails silently. |
 
