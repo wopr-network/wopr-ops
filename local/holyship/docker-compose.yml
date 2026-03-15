@@ -67,9 +67,9 @@ services:
   # Holy Ship UI (Next.js)
   # ---------------------------------------------------------------------------
   ui:
-    image: ${HOLYSHIP_UI_IMAGE:-ghcr.io/wopr-network/holyship-ui:latest}
+    image: ${HOLYSHIP_UI_IMAGE:-ghcr.io/wopr-network/holyship-platform-ui:latest}
     build:
-      context: ${HOLYSHIP_UI_SRC:-../../../holyship-ui}
+      context: ${HOLYSHIP_UI_SRC:-../../../holyship-platform-ui}
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
