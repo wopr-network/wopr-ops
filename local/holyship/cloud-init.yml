@@ -1,0 +1,50 @@
+#cloud-config
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - git
+  - ufw
+
+write_files:
+  - path: /etc/sysctl.d/99-swap.conf
+    content: |
+      vm.swappiness=60
+
+runcmd:
+  # Swap (5GB)
+  - fallocate -l 5G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  - sysctl vm.swappiness=60
+
+  # Docker (official install)
+  - curl -fsSL https://get.docker.com | sh
+  - systemctl enable docker
+  - systemctl start docker
+
+  # Docker Compose plugin (comes with get.docker.com but ensure it)
+  - docker compose version || apt-get install -y docker-compose-plugin
+
+  # Create deploy user
+  - useradd -m -s /bin/bash -G docker deploy
+  - mkdir -p /home/deploy/.ssh
+  - cp /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
+  - chown -R deploy:deploy /home/deploy/.ssh
+  - chmod 700 /home/deploy/.ssh
+  - chmod 600 /home/deploy/.ssh/authorized_keys
+
+  # Clone wopr-ops for compose files
+  - su - deploy -c "git clone https://github.com/wopr-network/wopr-ops.git /home/deploy/wopr-ops"
+
+  # Create .env (placeholder — must be populated before docker compose up)
+  - touch /home/deploy/wopr-ops/local/holyship/.env
+  - chown deploy:deploy /home/deploy/wopr-ops/local/holyship/.env
+  - chmod 600 /home/deploy/wopr-ops/local/holyship/.env
+
+  # Signal ready
+  - echo "cloud-init complete" > /home/deploy/cloud-init-done
