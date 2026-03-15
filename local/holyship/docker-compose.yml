@@ -1,0 +1,115 @@
+## Holy Ship stack — Postgres, API, UI, Caddy
+##
+## Usage:
+##   docker compose up -d
+##   docker compose logs -f
+##
+## Ports (via Caddy):
+##   80/443  → holyship.wtf (UI) + api.holyship.wtf (API)
+##
+## Direct ports (bypass Caddy, local dev):
+##   3001 → holyship API
+##   3000 → holyship UI
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: holyship-postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: holyship
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: holyship
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U holyship"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - holyship
+
+  # ---------------------------------------------------------------------------
+  # Holy Ship API
+  # ---------------------------------------------------------------------------
+  api:
+    image: ${HOLYSHIP_API_IMAGE:-ghcr.io/wopr-network/holyship:latest}
+    build:
+      context: ${HOLYSHIP_SRC:-../../../holyship}
+      dockerfile: Dockerfile
+    container_name: holyship-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://holyship:${POSTGRES_PASSWORD}@postgres:5432/holyship
+      PORT: "3001"
+      HOST: "0.0.0.0"
+      HOLYSHIP_ADMIN_TOKEN: ${HOLYSHIP_ADMIN_TOKEN}
+      HOLYSHIP_WORKER_TOKEN: ${HOLYSHIP_WORKER_TOKEN}
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+      UI_ORIGIN: ${UI_ORIGIN:-https://holyship.wtf}
+    expose:
+      - "3001"
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+    networks:
+      - holyship
+
+  # ---------------------------------------------------------------------------
+  # Holy Ship UI (Next.js)
+  # ---------------------------------------------------------------------------
+  ui:
+    image: ${HOLYSHIP_UI_IMAGE:-ghcr.io/wopr-network/holyship-ui:latest}
+    build:
+      context: ${HOLYSHIP_UI_SRC:-../../../holyship-ui}
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
+    container_name: holyship-ui
+    depends_on:
+      api:
+        condition: service_healthy
+    expose:
+      - "3000"
+    ports:
+      - "3002:3000"
+    restart: unless-stopped
+    networks:
+      - holyship
+
+  # ---------------------------------------------------------------------------
+  # Caddy (reverse proxy, auto-TLS)
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    container_name: holyship-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - holyship
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  holyship:
+    driver: bridge
