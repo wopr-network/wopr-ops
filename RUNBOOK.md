@@ -8,6 +8,44 @@
 **Last Updated:** 2026-03-14
 **Last Operation:** Full DinD local dev stack online — VPS + GPU containers both healthy (2026-03-05). GPU: RTX 3070 8GB, CUDA 13.0. All 9 services healthy. GPU seeded — InferenceWatchdog confirmed llama, qwen, chatterbox, whisper all ok.
 
+## 2026-03-14 — Paperclip Platform: Org Integration + Fleet Auto-Update + Email Notifications
+
+~25 PRs merged across platform-core, paperclip-platform, platform-ui-core, and paperclip. Three design specs fully implemented end-to-end.
+
+### New Env Vars (paperclip-platform)
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `APP_BASE_URL` | `https://app.paperclip.bot` | Base URL for links in notification emails |
+| `FROM_EMAIL` | `noreply@paperclip.bot` | Sender address for notification emails (distinct from `RESEND_FROM_EMAIL` used by better-auth verification emails) |
+| `FLEET_SNAPSHOT_DIR` | `/data/fleet/snapshots` | Volume snapshot storage for nuclear rollback |
+
+`RESEND_API_KEY` and `RESEND_FROM_EMAIL` were already documented. Without `RESEND_API_KEY`, the notification pipeline is silently skipped (non-fatal).
+
+### New DB Tables (auto-migrated on boot)
+
+| Table | Source |
+|-------|--------|
+| `notification_queue` | Email notification queue (pending/sent/failed) |
+| `notification_preferences` | Per-tenant notification toggles (incl. `fleet_updates`) |
+| `notification_templates` | Handlebars email templates (seeded with 30 defaults on first boot) |
+| `tenant_update_configs` | Per-tenant auto/manual update mode + preferred maintenance hour |
+
+All tables are created by Drizzle migrations that run automatically on startup. The template seed is idempotent (INSERT OR IGNORE — admin edits are never overwritten).
+
+### Behavioral Changes
+
+- **Billing mutations require admin/owner role** — `creditsCheckout`, `changePlan`, `portalSession`, `setInferenceMode`, `updateSpendingLimits`, `removePaymentMethod`, `updateBillingEmail`, `updateAutoTopupSettings`, `applyCoupon`. Members get FORBIDDEN. Personal tenants (no org) are unaffected.
+- **Health check timeout increased to 120s** (was 60s) for fleet container updates.
+- **Fleet auto-update pipeline**: ImagePoller → RolloutOrchestrator (rolling wave) → VolumeSnapshotManager → ContainerUpdater → FleetEventEmitter → 60s debounce → NotificationWorker → Resend.
+- **Manual-mode tenants** get "update available" emails when a new image is detected.
+- **Auto-mode tenants** get "update complete" summary emails after rollout.
+- **Admin fleet management**: `adminFleetUpdate.rolloutStatus`, `forceRollout`, `listTenantConfigs`, `setTenantConfig`.
+- **Admin email template editor** at `/admin/email-templates` — edit Handlebars templates with live preview.
+- **Org member provisioning**: acceptInvite/changeRole/removeMember propagate to Paperclip containers via `/internal/members/*` endpoints (best-effort, fire-and-forget).
+- **ROLE_PERMISSIONS map**: owner/admin/member → Paperclip permission keys. Enforced during member provisioning.
+- **hostedMode UI guards**: CompanySwitcher hides dropdown in hosted_proxy mode.
+
 ## Production Blockers (must resolve before go-live)
 
 All blockers resolved. No CRITICAL or HIGH blockers outstanding.
