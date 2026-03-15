@@ -1,0 +1,12 @@
+# Holy Ship — production Caddyfile
+#
+# Caddy auto-provisions TLS via Let's Encrypt.
+# DNS must point api.holyship.wtf and holyship.wtf at this server.
+
+holyship.wtf, www.holyship.wtf {
+	reverse_proxy ui:3000
+}
+
+api.holyship.wtf {
+	reverse_proxy api:3001
+}
