@@ -5,8 +5,51 @@
 ## Current State
 
 **Status:** PRE-PRODUCTION — not yet deployed to VPS
-**Last Updated:** 2026-03-14
-**Last Operation:** Full DinD local dev stack online — VPS + GPU containers both healthy (2026-03-05). GPU: RTX 3070 8GB, CUDA 13.0. All 9 services healthy. GPU seeded — InferenceWatchdog confirmed llama, qwen, chatterbox, whisper all ok.
+**Last Updated:** 2026-03-15
+**Last Operation:** Holy Ship local stack fully tested — 4 containers (postgres, api, ui, caddy) all healthy. All 6 UI routes verified. Signal orange theme rendering. GitHub App created and installed.
+
+## 2026-03-15 — Holy Ship: Full Platform Build + Local Stack Verified
+
+### What shipped
+
+- **Baked-in engineering flow** — 11 states, 3 gates, 13 transitions. Opinionated: spec→code→review→fix→docs→learning→merge→done. Gates: spec-posted, ci-green, pr-mergeable. 29 integration tests covering full transition graph including review/fix loops and terminal paths.
+- **boot.ts fully wired** — provisions engineering flow on startup, mounts createHonoApp (all engine routes), Ship It endpoint (/api/ship-it), GitHub webhook handler (/api/github/webhook). Primitive gate handler connected to GitHub API ops via installation tokens.
+- **Dockerfile for holyship** — multi-stage (deps→build→runtime), node:22-alpine, health check at /health, CMD boots via platform/boot.js.
+- **Dockerfile for holyship-platform-ui** — multi-stage, standalone Next.js output, 7 NEXT_PUBLIC_* build args for brand config.
+- **Docker Compose stack** in wopr-ops/local/holyship/ — postgres:16, holyship-api:3001, holyship-platform-ui:3000 (mapped to 3002 locally), caddy:2 with auto-TLS.
+- **21 dead test files deleted**, 5 stale tests updated. 68 test files, 962 tests, 0 failures.
+- **GitHub App** — "Holy Ship" (App ID 3099979), installed on wopr-network. Webhook: api.holyship.wtf/api/github/webhook.
+- **DNS** — holyship.wtf (CF Pages landing page), api.holyship.wtf (A record, placeholder until DO), holyship.dev (301→holyship.wtf via CF redirect rule).
+- **Landing page** — deployed to CF Pages, serves on holyship.wtf + www.holyship.wtf.
+- **Backup scripts** — sync-tsavo-g.sh (183 personal repos, hourly at :37), sync-orgs-g.sh (NeuralLog+MCPLookup+MediaConduit, 38 repos, hourly at :47). All backed up to Google Drive.
+
+### Local test results
+
+| Container | Status | Port |
+|-----------|--------|------|
+| holyship-postgres | healthy | 5432 (internal) |
+| holyship-api | healthy | 3001 |
+| holyship-platform-ui | healthy | 3002 (maps to 3000 internal) |
+| holyship-caddy | running | 80, 443 |
+
+| Route | Status |
+|-------|--------|
+| `/` | 200 — "Holy Ship — Guaranteed Code Shipping" |
+| `/login` | 200 |
+| `/connect` | 307 → github.com/apps/holyship/installations/new |
+| `/ship` | 200 |
+| `/approvals` | 200 |
+| `/settings/pipeline` | 200 |
+
+### Open PRs
+
+| Repo | PR | Status |
+|------|----|--------|
+| holyship | #192 | Open — engine, tests, boot wiring, Dockerfile, gates |
+
+### Next: DO deployment
+
+Plan: s-1vcpu-1gb ($6/mo) sfo2, Ubuntu 24.04 LTS, 5GB swap. Cloud-init: Docker + swap. Then point api.holyship.wtf A record at droplet IP, Caddy handles TLS.
 
 ## 2026-03-14 — Paperclip Platform: Org Integration + Fleet Auto-Update + Email Notifications
 

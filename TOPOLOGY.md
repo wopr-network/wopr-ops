@@ -121,54 +121,80 @@ Tenant Containers (dynamic, managed by paperclip-platform via Dockerode)
 
 Guaranteed code shipping. One shared engine instance, ephemeral holyshipper containers per-issue. GitHub App only.
 
-**Domain strategy:** holyship.wtf is the canonical site. holyship.dev 301-redirects to holyship.wtf. API/gateway subdomains stay on holyship.dev (no .wtf subdomains for infrastructure).
+**Domain strategy:** holyship.wtf is the canonical domain. holyship.dev 301-redirects to holyship.wtf (Cloudflare redirect rule). API lives at api.holyship.wtf.
+
+**Landing page:** CF Pages project `holyship` serves holyship.wtf + www.holyship.wtf via CNAME → holyship.pages.dev.
+
+**GitHub App:** "Holy Ship" (App ID 3099979), installed on wopr-network org. Webhook URL: `https://api.holyship.wtf/api/github/webhook`. Installation tokens (1hr TTL) used for git ops in holyshipper containers.
+
+**DO droplet:** `holyship`, s-1vcpu-1gb ($6/mo), sfo2, Ubuntu 24.04 LTS, 5GB swap. SSH key: id_ed25519.
 
 ```
 Internet
-  └─ Cloudflare DNS
-       ├─ holyship.wtf            → VPS IP (landing + dashboard — canonical)
-       ├─ holyship.dev            → 301 redirect to holyship.wtf (Cloudflare Page Rule)
-       ├─ api.holyship.dev        → VPS IP (platform API)
-       └─ gateway.holyship.dev    → VPS IP (metered inference gateway)
+  └─ Cloudflare
+       ├─ holyship.wtf            → CF Pages (landing page) / VPS IP (dashboard)
+       ├─ www.holyship.wtf        → CNAME holyship.wtf
+       ├─ holyship.dev            → 301 redirect to holyship.wtf (CF redirect rule)
+       └─ api.holyship.wtf        → VPS IP (platform API + webhook)
 
-Production VPS
+Production VPS (DO sfo2, s-1vcpu-1gb, 5GB swap)
   └─ docker-compose.yml
-       ├─ caddy:2-alpine                        (80, 443)
+       ├─ caddy:2-alpine                        (80, 443 — auto-TLS)
        │    ├─ holyship.wtf              → holyship-ui:3000
-       │    ├─ api.holyship.dev/api      → holyship-platform:4000
-       │    ├─ api.holyship.dev/trpc     → holyship-platform:4000
-       │    └─ gateway.holyship.dev/v1   → holyship-platform:4000 (metered gateway)
-       ├─ holyship-platform              (4000 — internal)
+       │    └─ api.holyship.wtf          → holyship-api:3001
+       ├─ holyship-api                   (3001 — internal)
        │    ├─ Flow engine (state machine, gates, claim/report)
-       │    ├─ GitHub App webhook receiver
-       │    ├─ Docker socket → spawns holyshipper containers
+       │    ├─ GitHub App webhook at /api/github/webhook
+       │    ├─ Ship It endpoint at /api/ship-it
+       │    ├─ Baked-in engineering flow (auto-provisioned on boot)
        │    └─ platform-core: auth, billing, fleet, gateway
        ├─ holyship-platform-ui           (3000 — internal)
-       └─ postgres:16-alpine             (5432 — shared with platform-core)
+       └─ postgres:16-alpine             (5432 — internal)
 
-Holyshipper Containers (ephemeral, per-issue, managed by holyship-platform via fleet)
+Holyshipper Containers (ephemeral, per-issue, managed by holyship-api via fleet)
   └─ ghcr.io/wopr-network/holyshipper-coder:latest (or holyshipper-devops)
        ├─ one per issue, tears down when done
-       ├─ LLM calls → gateway.holyship.dev → metered → credits
+       ├─ LLM calls → metered gateway → credits
        ├─ Git push via GitHub App installation token (1hr TTL)
-       └─ claims work from holyship-platform, reports signals back
+       └─ claims work from holyship-api, reports signals back
 ```
 
 ### Holy Ship Flow
 
 ```
 Issue arrives (GitHub webhook or "Ship It" button)
-  → holyship-platform creates entity in flow
+  → holyship-api creates entity in "spec" state
   → fleet provisions holyshipper container
   → holyshipper claims work → runs Claude agent
   → agent reports signal → engine evaluates gate
-     ├─ gate passes → transition → next stage → holyshipper claims again
+     ├─ gate passes → transition → next state → holyshipper claims again
      ├─ gate fails → new invocation with failure context → holyshipper retries
      ├─ approval required → holyshipper tears down → entity waits in inbox
      │    └─ human approves → new invocation → new holyshipper provisions
      ├─ spending cap hit → entity moves to budget_exceeded
      └─ terminal state → holyshipper tears down, entity done
 ```
+
+### Baked-In Engineering Flow (11 states, 3 gates, 13 transitions)
+
+```
+spec ──spec_ready──→ code ──pr_created──→ review ──clean──→ docs ──docs_ready──→ learning ──learned──→ merge ──merged──→ done
+                                            │                 │                                         │
+                                            ├─issues──→ fix ←─┤cant_document──→ stuck                   ├─blocked──→ fix
+                                            ├─ci_failed──→ fix │                                        └─closed──→ stuck
+                                            │            │
+                                            │            └─fixes_pushed──→ review (loop)
+                                            │            └─cant_resolve──→ stuck
+```
+
+**Gates (opinionated, baked-in):**
+| Gate | Transition | Check |
+|------|-----------|-------|
+| spec-posted | spec→code | `issue_tracker.comment_exists` — spec posted as issue comment |
+| ci-green | code→review | `vcs.ci_status` — all CI checks passed |
+| pr-mergeable | merge→done | `vcs.pr_status` — PR is clean and mergeable |
+
+Gates use GitHub App installation tokens via `primitive-ops.ts`. No shell scripts.
 
 ### Holy Ship Key Concepts
 
@@ -185,17 +211,24 @@ Issue arrives (GitHub webhook or "Ship It" button)
 
 | Var | Where | Purpose |
 |-----|-------|---------|
-| `DATABASE_URL` | holyship-platform | Shared Postgres (platform-core + holyship tables) |
-| `OPENROUTER_API_KEY` | holyship-platform | Upstream LLM provider for gateway |
-| `GITHUB_APP_ID` | holyship-platform | GitHub App authentication |
-| `GITHUB_APP_PRIVATE_KEY` | holyship-platform | GitHub App JWT signing |
-| `GITHUB_WEBHOOK_SECRET` | holyship-platform | Webhook signature verification |
-| `STRIPE_SECRET_KEY` | holyship-platform | Payment processing |
-| `FLEET_DATA_DIR` | holyship-platform | Meter WAL/DLQ path |
+| `DATABASE_URL` | holyship-api | Shared Postgres |
+| `HOLYSHIP_ADMIN_TOKEN` | holyship-api | Admin auth for MCP/admin routes |
+| `HOLYSHIP_WORKER_TOKEN` | holyship-api | Worker auth for claim/report |
+| `GITHUB_APP_ID` | holyship-api | GitHub App authentication |
+| `GITHUB_APP_PRIVATE_KEY` | holyship-api | GitHub App JWT signing |
+| `GITHUB_WEBHOOK_SECRET` | holyship-api | Webhook HMAC verification |
+| `OPENROUTER_API_KEY` | holyship-api | Upstream LLM provider for gateway |
+| `STRIPE_SECRET_KEY` | holyship-api | Payment processing |
+| `UI_ORIGIN` | holyship-api | CORS origin (https://holyship.wtf) |
+
+UI build-time vars (baked into Next.js at `docker compose build`):
+| `NEXT_PUBLIC_API_URL` | holyship-platform-ui | API base URL (https://api.holyship.wtf) |
+| `NEXT_PUBLIC_GITHUB_APP_URL` | holyship-platform-ui | GitHub App install URL |
+| `NEXT_PUBLIC_BRAND_*` | holyship-platform-ui | Product name, domain, tagline, storage prefix, home path |
 
 Holyshipper containers receive these at provision time (not configured manually):
 | `ANTHROPIC_API_KEY` | holyshipper | Gateway service key (not a real API key) |
-| `ANTHROPIC_BASE_URL` | holyshipper | Points to gateway.holyship.dev |
+| `ANTHROPIC_BASE_URL` | holyshipper | Points to metered gateway |
 | `GITHUB_TOKEN` | holyshipper | Installation access token (1hr TTL) |
 | `HOLYSHIP_URL` | holyshipper | Claim/report endpoint |
 | `HOLYSHIP_WORKER_TOKEN` | holyshipper | Per-container auth token |
@@ -252,8 +285,8 @@ User action → LLM call → gateway proxy → upstream provider
 | paperclip-platform | 3200 | Via Caddy at runpaperclip.com/api |
 | paperclip-platform-ui | 3000 | Via Caddy at app.runpaperclip.com |
 | **Holy Ship** | | |
-| holyship-platform | 4000 | Via Caddy at api.holyship.dev |
-| holyship-platform-ui | 3000 | Via Caddy at holyship.dev |
+| holyship-api | 3001 | Via Caddy at api.holyship.wtf |
+| holyship-platform-ui | 3000 | Via Caddy at holyship.wtf |
 | **Infrastructure** | | |
 | caddy | 80, 443 | Direct |
 | postgres | 5432 | Internal only |
