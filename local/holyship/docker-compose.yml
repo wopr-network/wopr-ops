@@ -73,6 +73,12 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
+        NEXT_PUBLIC_GITHUB_APP_URL: ${NEXT_PUBLIC_GITHUB_APP_URL:-https://github.com/apps/holyship}
+        NEXT_PUBLIC_BRAND_PRODUCT_NAME: ${NEXT_PUBLIC_BRAND_PRODUCT_NAME:-Holy Ship}
+        NEXT_PUBLIC_BRAND_DOMAIN: ${NEXT_PUBLIC_BRAND_DOMAIN:-holyship.wtf}
+        NEXT_PUBLIC_BRAND_TAGLINE: ${NEXT_PUBLIC_BRAND_TAGLINE:-It's what you'll say when you see the results.}
+        NEXT_PUBLIC_BRAND_STORAGE_PREFIX: ${NEXT_PUBLIC_BRAND_STORAGE_PREFIX:-holyship}
+        NEXT_PUBLIC_BRAND_HOME_PATH: ${NEXT_PUBLIC_BRAND_HOME_PATH:-/dashboard}
     container_name: holyship-ui
     depends_on:
       api:
