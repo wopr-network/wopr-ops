@@ -8,7 +8,7 @@ Three products on shared infrastructure. Same GPUs, same platform-core, same cre
 |---------|--------|----------|-------------|
 | **WOPR** | wopr.bot | Bot deployers | AI bot platform — always-on bots across messaging channels |
 | **Paperclip** | runpaperclip.com | Non-technical users | Managed bot hosting — one-click bot deployment |
-| **Holy Ship** | holyship.dev | Engineering teams | Guaranteed code shipping — issues in, merged PRs out |
+| **Holy Ship** | holyship.wtf (canonical), holyship.dev (redirect) | Engineering teams | Guaranteed code shipping — issues in, merged PRs out |
 
 ## Repositories
 
@@ -117,21 +117,24 @@ Tenant Containers (dynamic, managed by paperclip-platform via Dockerode)
        └─ one per tenant, named volume /data for persistence
 ```
 
-## Holy Ship Architecture (holyship.dev)
+## Holy Ship Architecture (holyship.wtf)
 
 Guaranteed code shipping. One shared engine instance, ephemeral holyshipper containers per-issue. GitHub App only.
+
+**Domain strategy:** holyship.wtf is the canonical site. holyship.dev 301-redirects to holyship.wtf. API/gateway subdomains stay on holyship.dev (no .wtf subdomains for infrastructure).
 
 ```
 Internet
   └─ Cloudflare DNS
-       ├─ holyship.dev            → VPS IP (landing + dashboard)
+       ├─ holyship.wtf            → VPS IP (landing + dashboard — canonical)
+       ├─ holyship.dev            → 301 redirect to holyship.wtf (Cloudflare Page Rule)
        ├─ api.holyship.dev        → VPS IP (platform API)
        └─ gateway.holyship.dev    → VPS IP (metered inference gateway)
 
 Production VPS
   └─ docker-compose.yml
        ├─ caddy:2-alpine                        (80, 443)
-       │    ├─ holyship.dev              → holyship-ui:3000
+       │    ├─ holyship.wtf              → holyship-ui:3000
        │    ├─ api.holyship.dev/api      → holyship-platform:4000
        │    ├─ api.holyship.dev/trpc     → holyship-platform:4000
        │    └─ gateway.holyship.dev/v1   → holyship-platform:4000 (metered gateway)
