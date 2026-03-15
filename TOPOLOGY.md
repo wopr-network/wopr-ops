@@ -1,28 +1,65 @@
-# WOPR Production Topology
+# Production Topology
+
+Three products on shared infrastructure. Same GPUs, same platform-core, same credit system.
+
+## Products
+
+| Product | Domain | Audience | What it does |
+|---------|--------|----------|-------------|
+| **WOPR** | wopr.bot | Bot deployers | AI bot platform — always-on bots across messaging channels |
+| **Paperclip** | runpaperclip.com | Non-technical users | Managed bot hosting — one-click bot deployment |
+| **Holy Ship** | holyship.dev | Engineering teams | Guaranteed code shipping — issues in, merged PRs out |
 
 ## Repositories
 
 | Repo | Purpose | Registry Image |
 |------|---------|----------------|
-| wopr-network/wopr-platform | Hono API, Drizzle/Postgres, tRPC, fleet, billing, auth | ghcr.io/wopr-network/wopr-platform |
-| wopr-network/wopr-platform-ui | Next.js dashboard | ghcr.io/wopr-network/wopr-platform-ui |
-| wopr-network/wopr | WOPR bot core — one container per tenant | ghcr.io/wopr-network/wopr |
+| **Shared** | | |
+| wopr-network/platform-core | DB schema, auth, billing, fleet, gateway, credits | npm: @wopr-network/platform-core |
+| wopr-network/platform-ui-core | Brand-agnostic Next.js UI components | npm: @wopr-network/platform-ui-core |
 | wopr-network/wopr-ops | This logbook | N/A |
-| wopr-network/paperclip-platform | Paperclip Hono API — fleet, billing, auth (white-label of wopr-platform) | TBD |
-| wopr-network/platform-ui-core | Brand-agnostic Next.js dashboard (shared by WOPR + Paperclip) | TBD |
-| wopr-network/paperclip | Paperclip managed bot — one container per tenant | TBD |
+| **WOPR** | | |
+| wopr-network/wopr-platform | WOPR Hono API — fleet, billing, auth | ghcr.io/wopr-network/wopr-platform |
+| wopr-network/wopr-platform-ui | WOPR dashboard (thin shell on platform-ui-core) | ghcr.io/wopr-network/wopr-platform-ui |
+| wopr-network/wopr | WOPR bot core — one container per tenant | ghcr.io/wopr-network/wopr |
+| **Paperclip** | | |
+| wopr-network/paperclip-platform | Paperclip Hono API — fleet, billing, auth | ghcr.io/wopr-network/paperclip-platform |
+| wopr-network/paperclip-platform-ui | Paperclip dashboard (thin shell on platform-ui-core) | ghcr.io/wopr-network/paperclip-platform-ui |
+| wopr-network/paperclip | Paperclip managed bot — one container per tenant | ghcr.io/wopr-network/paperclip |
+| **Holy Ship** | | |
+| wopr-network/holyship | Flow engine + platform server (holyship-platform) | ghcr.io/wopr-network/holyship |
+| wopr-network/holyship-platform-ui | Holy Ship dashboard (thin shell on platform-ui-core) | ghcr.io/wopr-network/holyship-platform-ui |
+| wopr-network/holyshipper | Ephemeral agent containers — per-discipline worker images | ghcr.io/wopr-network/holyshipper-coder, holyshipper-devops |
+
+## Shared Infrastructure
+
+```
+platform-core (npm package)
+    ├── BetterAuth (sessions, signup, login)
+    ├── Stripe + double-entry credit ledger
+    ├── FleetManager (Docker container lifecycle)
+    ├── Metered inference gateway (OpenRouter proxy)
+    ├── tRPC router factories
+    └── Drizzle ORM (shared Postgres schema)
+
+platform-ui-core (npm package)
+    ├── Brand-agnostic Next.js components
+    ├── setBrandConfig() — one call configures everything
+    ├── Auth, billing, settings pages
+    └── Each brand is a thin shell (~30 files)
+```
 
 ## CI/CD Pipeline
 
 ```
 push to main (any repo)
-  → GitHub Actions: lint + test + build
+  → GitHub Actions: lint + test + build (runs-on: self-hosted)
   → docker build → push ghcr.io/wopr-network/<repo>:latest
   → SSH to VPS
   → docker compose pull && docker compose up -d
 ```
 
-## Production Architecture
+## WOPR Architecture (wopr.bot)
 
 ```
 Internet
@@ -45,7 +82,7 @@ Tenant Containers (dynamic, managed by platform-api via Dockerode)
   └─ ghcr.io/wopr-network/wopr:latest
        └─ one per user, named volume /data for persistence
 
-GPU Node (DigitalOcean — separate droplet, not yet provisioned)
+GPU Node (DigitalOcean — separate droplet)
   └─ docker-compose.gpu.yml
        ├─ llama.cpp    :8080
        ├─ chatterbox   :8081
@@ -53,18 +90,18 @@ GPU Node (DigitalOcean — separate droplet, not yet provisioned)
        └─ qwen         :8083
 ```
 
-## Paperclip Platform Architecture (runpaperclip.com)
+## Paperclip Architecture (runpaperclip.com)
 
-White-label deployment of the WOPR platform stack for Paperclip AI. Uses `@wopr-network/platform-core` for shared DB schema, auth, and billing logic.
+White-label deployment using platform-core. Same pattern as WOPR but for managed bot hosting.
 
 ```
 Internet
   └─ Cloudflare DNS
-       ├─ runpaperclip.com       → VPS IP (TBD)
+       ├─ runpaperclip.com       → VPS IP
        ├─ app.runpaperclip.com   → VPS IP (dashboard)
        └─ *.runpaperclip.com     → VPS IP (tenant subdomains)
 
-Production VPS (TBD)
+Production VPS
   └─ docker-compose.yml
        ├─ caddy:2-alpine                (80, 443)
        │    ├─ app.runpaperclip.com  → dashboard:3000
@@ -72,37 +109,118 @@ Production VPS (TBD)
        │    └─ *.runpaperclip.com    → platform:3200 (tenant proxy)
        ├─ paperclip-platform         (3200 — internal)
        │    └─ Docker socket → spawns tenant containers
-       ├─ platform-ui-core          (3000 — internal, .env.paperclip branding)
-       └─ postgres:16-alpine        (5432 — internal)
+       ├─ paperclip-platform-ui      (3000 — internal)
+       └─ postgres:16-alpine         (5432 — internal)
 
 Tenant Containers (dynamic, managed by paperclip-platform via Dockerode)
   └─ paperclip-managed:latest
        └─ one per tenant, named volume /data for persistence
 ```
 
-### Paperclip Local Dev Stack
+## Holy Ship Architecture (holyship.dev)
 
-Run from `~/paperclip-platform`:
-```bash
-cp .env.local.example .env.local   # fill in Stripe test keys from ~/wopr-platform/.env
-docker build -t paperclip-managed:local -f ~/paperclip/Dockerfile.managed ~/paperclip
-bash scripts/local-test.sh         # or: docker compose -f docker-compose.local.yml up --build
+Guaranteed code shipping. One shared engine instance, ephemeral holyshipper containers per-issue. GitHub App only.
+
+```
+Internet
+  └─ Cloudflare DNS
+       ├─ holyship.dev            → VPS IP (landing + dashboard)
+       ├─ api.holyship.dev        → VPS IP (platform API)
+       └─ gateway.holyship.dev    → VPS IP (metered inference gateway)
+
+Production VPS
+  └─ docker-compose.yml
+       ├─ caddy:2-alpine                        (80, 443)
+       │    ├─ holyship.dev              → holyship-ui:3000
+       │    ├─ api.holyship.dev/api      → holyship-platform:4000
+       │    ├─ api.holyship.dev/trpc     → holyship-platform:4000
+       │    └─ gateway.holyship.dev/v1   → holyship-platform:4000 (metered gateway)
+       ├─ holyship-platform              (4000 — internal)
+       │    ├─ Flow engine (state machine, gates, claim/report)
+       │    ├─ GitHub App webhook receiver
+       │    ├─ Docker socket → spawns holyshipper containers
+       │    └─ platform-core: auth, billing, fleet, gateway
+       ├─ holyship-platform-ui           (3000 — internal)
+       └─ postgres:16-alpine             (5432 — shared with platform-core)
+
+Holyshipper Containers (ephemeral, per-issue, managed by holyship-platform via fleet)
+  └─ ghcr.io/wopr-network/holyshipper-coder:latest (or holyshipper-devops)
+       ├─ one per issue, tears down when done
+       ├─ LLM calls → gateway.holyship.dev → metered → credits
+       ├─ Git push via GitHub App installation token (1hr TTL)
+       └─ claims work from holyship-platform, reports signals back
 ```
 
-| Service | Port | URL |
-|---------|------|-----|
-| Dashboard | 8080 (via Caddy) | http://app.localhost:8080 |
-| API | 3200 | http://localhost:3200/health |
-| Tenant proxy | 8080 (via Caddy) | http://{subdomain}.localhost:8080 |
-| Postgres | 5433 (mapped) | localhost:5433 (paperclip/paperclip-local) |
-| Caddy admin | 2019 | http://localhost:2019 |
+### Holy Ship Flow
 
-### Shared Dependencies
+```
+Issue arrives (GitHub webhook or "Ship It" button)
+  → holyship-platform creates entity in flow
+  → fleet provisions holyshipper container
+  → holyshipper claims work → runs Claude agent
+  → agent reports signal → engine evaluates gate
+     ├─ gate passes → transition → next stage → holyshipper claims again
+     ├─ gate fails → new invocation with failure context → holyshipper retries
+     ├─ approval required → holyshipper tears down → entity waits in inbox
+     │    └─ human approves → new invocation → new holyshipper provisions
+     ├─ spending cap hit → entity moves to budget_exceeded
+     └─ terminal state → holyshipper tears down, entity done
+```
+
+### Holy Ship Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Entity** | An issue being worked. Moves through flow states. |
+| **Flow** | State machine definition (spec → code → review → merge) |
+| **Gate** | Deterministic check at state boundaries (CI, review bots, human approval) |
+| **Holyshipper** | Ephemeral Docker container that runs a Claude agent for one issue |
+| **Installation token** | 1-hour GitHub App token, generated per-holyshipper at provision time |
+| **Service key** | Gateway API key tied to tenant, metered for billing |
+
+### Holy Ship Env Vars
+
+| Var | Where | Purpose |
+|-----|-------|---------|
+| `DATABASE_URL` | holyship-platform | Shared Postgres (platform-core + holyship tables) |
+| `OPENROUTER_API_KEY` | holyship-platform | Upstream LLM provider for gateway |
+| `GITHUB_APP_ID` | holyship-platform | GitHub App authentication |
+| `GITHUB_APP_PRIVATE_KEY` | holyship-platform | GitHub App JWT signing |
+| `GITHUB_WEBHOOK_SECRET` | holyship-platform | Webhook signature verification |
+| `STRIPE_SECRET_KEY` | holyship-platform | Payment processing |
+| `FLEET_DATA_DIR` | holyship-platform | Meter WAL/DLQ path |
+
+Holyshipper containers receive these at provision time (not configured manually):
+| `ANTHROPIC_API_KEY` | holyshipper | Gateway service key (not a real API key) |
+| `ANTHROPIC_BASE_URL` | holyshipper | Points to gateway.holyship.dev |
+| `GITHUB_TOKEN` | holyshipper | Installation access token (1hr TTL) |
+| `HOLYSHIP_URL` | holyshipper | Claim/report endpoint |
+| `HOLYSHIP_WORKER_TOKEN` | holyshipper | Per-container auth token |
+
+## Shared Dependencies
 
 | Package | Used By | Purpose |
 |---------|---------|---------|
-| @wopr-network/platform-core | wopr-platform, paperclip-platform | DB schema, Drizzle migrations, BetterAuth, CreditLedger, UserRoleRepo |
-| platform-ui-core | wopr-platform-ui (brand shell), paperclip dashboard | Brand-agnostic Next.js UI, configured via NEXT_PUBLIC_BRAND_* env vars |
+| @wopr-network/platform-core | wopr-platform, paperclip-platform, holyship | DB schema, Drizzle migrations, BetterAuth, CreditLedger, FleetManager, Gateway |
+| @wopr-network/platform-ui-core | wopr-platform-ui, paperclip-platform-ui, holyship-platform-ui | Brand-agnostic Next.js UI, configured via setBrandConfig() |
+
+## Revenue Model
+
+All three products use inference arbitrage:
+
+```
+User action → LLM call → gateway proxy → upstream provider
+                              ↓
+                     serviceKeyAuth() → resolve tenant
+                     meter tokens → debit credits
+                     margin = credit price - wholesale cost
+```
+
+| Product | Token pattern | Billing model |
+|---------|--------------|---------------|
+| WOPR | Per-conversation | Always-on bot, continuous |
+| Paperclip | Per-conversation | Always-on bot, continuous |
+| Holy Ship | Per-issue | Ephemeral, massive burst per issue (250K-1M+ tokens) |
 
 ## Hard Constraints
 
@@ -111,21 +229,31 @@ bash scripts/local-test.sh         # or: docker compose -f docker-compose.local.
 - NO secrets in any file committed to git
 - NO unversioned images — always pull :latest after CI builds
 - Cloudflare proxy must be OFF on A records (Caddy DNS-01 requires it)
+- ALL CI workflows use `runs-on: self-hosted` — never GitHub-hosted runners
 
 ## MCP Tools Available
 
 | Tool | Provider | Capability |
 |------|----------|-----------|
 | DO MCP | DigitalOcean | Provision/destroy/reboot droplets, manage SSH keys |
-| Cloudflare MCP | Cloudflare | Create/update/delete DNS records on wopr.bot zone |
+| Cloudflare MCP | Cloudflare | Create/update/delete DNS records |
 
 ## Port Reference
 
 | Service | Internal Port | External Access |
 |---------|--------------|-----------------|
+| **WOPR** | | |
 | platform-api | 3100 | Via Caddy at api.wopr.bot |
 | platform-ui | 3000 | Via Caddy at wopr.bot |
+| **Paperclip** | | |
+| paperclip-platform | 3200 | Via Caddy at runpaperclip.com/api |
+| paperclip-platform-ui | 3000 | Via Caddy at app.runpaperclip.com |
+| **Holy Ship** | | |
+| holyship-platform | 4000 | Via Caddy at api.holyship.dev |
+| holyship-platform-ui | 3000 | Via Caddy at holyship.dev |
+| **Infrastructure** | | |
 | caddy | 80, 443 | Direct |
+| postgres | 5432 | Internal only |
 | llama (GPU) | 8080 | GPU node internal only |
 | chatterbox (GPU) | 8081 | GPU node internal only |
 | whisper (GPU) | 8082 | GPU node internal only |
@@ -146,7 +274,7 @@ After GPU provisioning: update `GPU_NODE_HOST` in VPS `.env` and `--force-recrea
 
 ## Time Synchronization
 
-All WOPR infrastructure uses a shared NTP source to ensure consistent timestamps across logs, event ordering, timeouts, and replay protection.
+All infrastructure uses a shared NTP source to ensure consistent timestamps across logs, event ordering, timeouts, and replay protection.
 
 | Layer | Mechanism |
 |-------|-----------|
@@ -154,7 +282,7 @@ All WOPR infrastructure uses a shared NTP source to ensure consistent timestamps
 | Runner stack | `cturra/ntp` chrony container → runners sync on startup via `SYS_TIME` cap |
 | Local dev stack | `cturra/ntp` chrony container on `wopr-local` network |
 
-**Why this matters:** defcon and norad store all timestamps as Unix ms integers. If the host clock drifts (especially in WSL2 after sleep/wake), gate timeouts, event ordering, and replay-protection nonce windows all silently break.
+**Why this matters:** holyship stores all timestamps as Unix ms integers. If the host clock drifts (especially in WSL2 after sleep/wake), gate timeouts, event ordering, and replay-protection nonce windows all silently break.
 
 **Upstream NTP chain:**
 ```
@@ -172,4 +300,3 @@ sudo apt install chrony
 sudo systemctl disable systemd-timesyncd
 sudo systemctl enable --now chronyd
 ```
-
