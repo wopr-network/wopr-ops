@@ -950,7 +950,7 @@ Three watcher types poll their respective chains for incoming payments. All use 
 |---------|-------|----------------|--------|
 | EVM (ERC-20) | `EvmWatcher` | `eth_getLogs` for ERC-20 Transfer events | Block number in `watcher_cursors` |
 | ETH (native) | `EthWatcher` | `eth_getBlockByNumber` scanning tx `to` + `value` | Block number in `watcher_cursors` |
-| BTC | `BtcWatcher` | bitcoind `listsinceblock` RPC | Block hash in `watcher_cursors` + txid dedup in `watcher_processed` |
+| BTC | `BtcWatcher` | bitcoind `listreceivedbyaddress` RPC | txid dedup in `watcher_processed` |
 
 **Cursor persistence tables:**
 - `watcher_cursors`: `(watcher_id TEXT PK, cursor TEXT, updated_at)` — stores block number/hash per watcher
@@ -959,18 +959,28 @@ Three watcher types poll their respective chains for incoming payments. All use 
 **EVM watcher saves cursor per-block** (groups logs by block number, checkpoints after each block). If it crashes mid-range, it re-scans only from the last checkpointed block.
 
 **Settler pattern:** All three settlers share the same idempotency model:
-1. Look up charge by deposit address → if not found, return `status: "Invalid"` (not "Settled")
-2. Check `creditRef` uniqueness (e.g. `erc20:base:0xabc...`, `eth:base:0xdef...`, `btc:txid`)
-3. Call `Credit.fromCents()` → nanodollars → double-entry journal
-4. Mark charge as credited
+1. Look up charge by deposit address (lowercased) → if not found, return `status: "Invalid"`
+2. Update charge status to "Settled"
+3. Check `creditRef` uniqueness (e.g. `evm:base:txHash:logIndex`, `eth:base:txHash`, `btc:txid`)
+4. Underpayment check — 2% tolerance for oracle price drift (native assets only)
+5. Call `Credit.fromCents()` → nanodollars → double-entry journal
+6. Mark charge as credited (`creditedAt` timestamp)
 
-**NOT YET WIRED:** The watchers exist as classes but `initCryptoWatchers()` (startup loop) and settler wiring (onPayment → settle) are not built yet. See shipping gaps below.
+**BTC watcher uses `importdescriptors`** (bitcoind v24+) to add watch-only addresses. Falls back to legacy `importaddress` for older versions. Creates a `paperclip-watcher` watch-only descriptor wallet on first startup.
 
-### Crypto shipping gaps (as of 2026-03-14)
+**Error isolation:** One unsupported token (e.g. WETH without proper watcher mapping) does NOT block other watchers — `createWatcher` failures are caught per-method and logged.
 
-1. **Watcher startup loop** — need `initCryptoWatchers()` in paperclip-platform that reads enabled methods from DB, creates watcher instances, runs `poll()` on interval, wires `onPayment` → settler
-2. **Settler wiring** — `onPayment` callbacks need to call `settleEvmPayment`/`settleEthPayment`/`settleBtcPayment`
-3. **Payment status polling** — UI shows deposit address but can't tell user when confirmed. Need `billing.chargeStatus` tRPC query
+### Crypto shipping gaps — ALL CLOSED (2026-03-15)
+
+All gaps identified on 2026-03-14 are resolved:
+- ~~Watcher startup loop~~ → `initCryptoWatchers()` in `paperclip-platform/src/crypto/init-watchers.ts`
+- ~~Settler wiring~~ → `onPayment` callbacks wire to `settleEvmPayment`/`settleEthPayment`/`settleBtcPayment`
+- ~~Payment status polling~~ → `billing.chargeStatus` tRPC query + UI polling in `buy-crypto-credits-panel.tsx`
+- ~~Address case mismatch~~ → `createStablecoinCharge` lowercases deposit addresses (platform-core 1.35.0)
+- ~~ETH referenceId mismatch~~ → unified-checkout uses `${method.type}:chain:addr` consistently (1.35.2)
+- ~~Oracle price drift rejection~~ → 2% underpayment tolerance in ETH+BTC settlers (1.35.2)
+- ~~UTXO network hardcoded~~ → auto-detect from `getblockchaininfo` RPC (1.36.0)
+- ~~`importaddress` removed in bitcoind v30~~ → `importdescriptors` with fallback (1.36.1)
 
 ### BTCPay Server (REPLACED — reference only)
 
@@ -1144,48 +1154,66 @@ $CAST call $USDC "balanceOf(address)(uint256)" $DEPOSIT --rpc-url http://localho
 
 **E2E test script:** `wopr-ops/scripts/test-payments-e2e.sh` (tests both BTC regtest + stablecoin Anvil fork)
 
-### E2E crypto payment testing (verified 2026-03-14)
+### E2E crypto payment testing (verified 2026-03-15)
 
-**Full flow verified:** Checkout → USDC transfer → watcher detects → settler credits $10 → charge marked Settled.
+**All three chains verified end-to-end:** USDC (ERC-20), ETH (native), BTC (regtest).
 
-**Local Anvil setup (no fork):**
-
-Anvil fork mode causes `eth_getLogs` with topic filters to hang — it fetches historical data from upstream Base RPC. For E2E testing, use local mode (no `--fork-url`):
-
-1. Remove `--fork-url https://mainnet.base.org` from `docker-compose.local.yml` Anvil service
-2. Kill any host `anvil` process hogging port 8545: `kill $(lsof -ti:8545)`
-3. `docker compose -f docker-compose.local.yml up -d --force-recreate anvil`
-4. Deploy mock USDC:
+**Automated test script:**
 
 ```bash
-CAST=~/.foundry/bin/cast
-RPC=http://localhost:8545
-KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+# Run all chains
+bash scripts/e2e-crypto-test.sh
 
-# Deploy mock ERC-20 (needs --broadcast flag!)
-DEPLOYED=$(forge create --broadcast --rpc-url $RPC --private-key $KEY \
-  --root /tmp/mock-usdc src/MockUSDC.sol:MockUSDC 2>&1 | grep "Deployed to:" | awk '{print $3}')
-
-# Copy bytecode to real USDC address
-CODE=$($CAST code $DEPLOYED --rpc-url $RPC)
-$CAST rpc anvil_setCode $USDC "$CODE" --rpc-url $RPC
-
-# Mint 1M USDC to deployer
-$CAST send $USDC "mint(address,uint256)" 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 1000000000000 \
-  --private-key $KEY --rpc-url $RPC
+# Run single chain
+bash scripts/e2e-crypto-test.sh --chain usdc
+bash scripts/e2e-crypto-test.sh --chain eth
+bash scripts/e2e-crypto-test.sh --chain btc
 ```
 
-5. Create checkout via API, send USDC to deposit address, watcher detects in 15s.
+The script handles: auth signup → checkout → simulate payment → wait for watcher → verify charge credited.
 
-**Payment method RPC URLs must be set in DB** — migration 0008 seeds payment methods but doesn't include `rpc_url`. Set manually:
+**Prerequisites:**
+
+1. `docker compose -f docker-compose.local.yml up --build` (full stack running)
+2. `/etc/hosts` has `127.0.0.1 runpaperclip.com app.runpaperclip.com api.runpaperclip.com`
+3. Disable unsupported ERC-20 tokens (WETH, cbBTC, etc.) if they error during watcher refresh
+
+**Critical setup steps (the script does NOT do these):**
+
+1. **Seed watcher cursors at current Anvil block** — watchers start from cursor 0 but the Base fork is at block 43M+. Querying `eth_getLogs` across 43M blocks hits the 10k range limit.
 
 ```sql
-UPDATE payment_methods SET rpc_url = 'http://anvil:8545' WHERE chain = 'base';
-UPDATE payment_methods SET rpc_url = 'http://btcpay:btcpay-local@bitcoind:18443' WHERE chain = 'bitcoin';
+-- Get current block: curl -sf http://localhost:8545 -X POST -H 'Content-Type: application/json' \
+--   -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' | jq -r '.result'
+-- Convert hex to decimal: python3 -c "print(int('0xHEX', 16))"
+DELETE FROM watcher_cursors;
+INSERT INTO watcher_cursors (watcher_id, cursor_block, updated_at) VALUES
+  ('evm:base:USDC', <BLOCK-1>, NOW()),
+  ('evm:base:USDT', <BLOCK-1>, NOW()),
+  ('evm:base:DAI', <BLOCK-1>, NOW()),
+  ('eth:base', <BLOCK-1>, NOW());
 ```
 
-**Watcher cursors must match actual block number** — if Anvil starts from block 0, set cursors to 0. Use `node -e "console.log(parseInt('0xHEX', 16))"` for hex→decimal conversion. `printf "%d"` in bash does NOT work reliably with hex strings.
+2. **Restart Anvil for fresh Chainlink feeds** — after ~1hr the BTC/USD feed goes stale (>3600s). Restart Anvil to get a fresh fork: `docker compose -f docker-compose.local.yml up -d --force-recreate --no-deps anvil`
+
+3. **Restart platform after cursor seed** — watchers read cursors on startup, not dynamically.
+
+**How each chain is tested:**
+
+| Chain | Simulate payment | How |
+|-------|-----------------|-----|
+| USDC | `anvil_setStorageAt` to mint, then `eth_sendTransaction` transfer | Auto-discovers USDC balance storage slot (tried slots 0-51), sets 1000 USDC to Anvil test account |
+| ETH | `eth_sendTransaction` from Anvil test account 0 | Anvil accounts have 10000 ETH each |
+| BTC | `createwallet` + `generatetoaddress` + `sendtoaddress` on regtest | Creates e2e-test wallet, mines 101 blocks for maturity, sends exact BTC amount |
+
+**Gotchas:**
+
+- **USDC storage slot varies by fork block** — the script auto-discovers it by trying slots 0-51
+- **Anvil fork loses config on restart** — verify with `anvil_nodeInfo` → `forkConfig.forkUrl` should not be null
+- **BTC needs regtest addresses** — watcher auto-detects network from `getblockchaininfo` and derives `bcrt1q...` addresses
+- **BTC watcher creates `paperclip-watcher` wallet** — watch-only descriptor wallet for `importdescriptors` (bitcoind v30+ removed `importaddress`)
+- **Auth rate limits** — script creates a fresh user each run to avoid rate limits on signin
+- **`eth_getLogs` 10k range limit** — if cursors aren't seeded near current block, EVM watchers fail with `413 eth_getLogs is limited to a 10,000 range`
 
 ### Unified HD wallet (BTC + ERC-20 + ETH)
 
