@@ -858,7 +858,25 @@ Payment methods are stored in the `payment_methods` DB table — no deploys need
 | `display_order` | integer | UI sort order |
 | `confirmations` | integer | Required block confirmations |
 
-**Seeded methods:** USDC, USDT, DAI (type `erc20`), ETH (type `native`), BTC (type `native`)
+**Seeded methods (15 total, 12 of top 30 by market cap):**
+
+| Token | Type | Chain | Contract |
+|-------|------|-------|----------|
+| USDC | erc20 | base | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
+| USDT | erc20 | base | `0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2` |
+| DAI | erc20 | base | `0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb` |
+| WETH | erc20 | base | `0x4200000000000000000000000000000000000006` |
+| cbBTC | erc20 | base | `0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf` |
+| AERO | erc20 | base | `0x940181a94A35A4569E4529A3CDfB74e38FD98631` |
+| LINK | erc20 | base | `0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196` |
+| UNI | erc20 | base | `0xc3De830EA07524a0761646a6a4e4be0e114a3C83` |
+| PEPE | erc20 | base | `0xb4fBF271143F4FBf7B91A5ded31805e42b2208d6` |
+| SHIB | erc20 | base | `0x2dE81E7E4cE120C85E1e846C326004A87cC0B168` |
+| RENDER | erc20 | base | `0x5765F016ECb0e498EaF996085e09907B9e8045c0` |
+| ETH | native | base | — |
+| BTC | native | bitcoin | — |
+| LTC | native | litecoin | — |
+| DOGE | native | dogecoin | — |
 
 **Admin API (tRPC):**
 - `billing.adminListPaymentMethods` — list all methods (enabled + disabled)
