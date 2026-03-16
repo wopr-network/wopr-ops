@@ -1,0 +1,15 @@
+# Holy Ship — local dev Caddyfile (no TLS)
+#
+# Add to /etc/hosts:
+#   127.0.0.1 holyship.wtf api.holyship.wtf
+
+:80 {
+	@api host api.holyship.wtf
+	handle @api {
+		reverse_proxy api:3001
+	}
+
+	handle {
+		reverse_proxy ui:3000
+	}
+}

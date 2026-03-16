@@ -34,13 +34,21 @@ Three products on shared infrastructure. Same GPUs, same platform-core, same cre
 ## Shared Infrastructure
 
 ```
-platform-core (npm package)
-    ├── BetterAuth (sessions, signup, login)
-    ├── Stripe + double-entry credit ledger
+platform-core (npm package — v1.36.3+)
+    ├── BetterAuth (sessions, signup, login, GitHub OAuth)
+    ├── Double-entry credit ledger (journal_entries + journal_lines + account_balances)
+    │    ├── Credits are nanodollars, integer math only
+    │    ├── $5 signup grant via grantSignupCredits()
+    │    └── Stripe + BTCPay crypto checkout
     ├── FleetManager (Docker container lifecycle)
-    ├── Metered inference gateway (OpenRouter proxy)
-    ├── tRPC router factories
-    └── Drizzle ORM (shared Postgres schema)
+    ├── Metered inference gateway (OpenRouter proxy at /v1)
+    │    ├── Per-tenant service keys (SHA-256 hashed, DB-backed)
+    │    ├── Budget check → upstream proxy → metering → credit debit
+    │    └── Usage sanitized to standard OpenAI format (strips OpenRouter extras)
+    ├── Org/tenant isolation (DrizzleOrgMemberRepository)
+    ├── Notification pipeline (Resend email, 29 templates, 30s poll)
+    ├── tRPC router factories (billing, org, settings, profile)
+    └── Drizzle ORM (shared Postgres schema + migrations)
 
 platform-ui-core (npm package)
     ├── Brand-agnostic Next.js components
@@ -147,16 +155,24 @@ Production VPS (DO sfo2, s-1vcpu-1gb, 5GB swap)
        │    ├─ GitHub App webhook at /api/github/webhook
        │    ├─ Ship It endpoint at /api/ship-it
        │    ├─ Baked-in engineering flow (auto-provisioned on boot)
-       │    └─ platform-core: auth, billing, fleet, gateway
+       │    ├─ Inference gateway at /v1 (metered OpenRouter proxy)
+       │    ├─ BetterAuth at /api/auth/* (sessions, GitHub OAuth)
+       │    ├─ tRPC at /trpc/* (billing, org, settings)
+       │    ├─ Crypto webhook at /api/webhooks/crypto (BTCPay)
+       │    ├─ Double-entry credit ledger (nanodollars, journal_entries + journal_lines)
+       │    └─ platform-core: auth, billing, credits, gateway, orgs, notifications
        ├─ holyship-platform-ui           (3000 — internal)
        └─ postgres:16-alpine             (5432 — internal)
 
 Holyshipper Containers (ephemeral, per-issue, managed by holyship-api via fleet)
   └─ ghcr.io/wopr-network/holyshipper-coder:latest (or holyshipper-devops)
        ├─ one per issue, tears down when done
-       ├─ LLM calls → metered gateway → credits
+       ├─ OpenCode SDK → OpenCode server (Go, port 4096) → gateway at /v1
+       ├─ per-entity service key (HOLYSHIP_GATEWAY_KEY) for metered billing
+       ├─ opencode.json declares "holyship" provider → @ai-sdk/openai-compatible
        ├─ Git push via GitHub App installation token (1hr TTL)
-       └─ claims work from holyship-api, reports signals back
+       ├─ worker-runtime: HTTP server (claim, dispatch, checkout, gate, credentials)
+       └─ SSE event streaming: tool_use, text, step-start/finish, session.error
 ```
 
 ### Holy Ship Flow
@@ -165,7 +181,7 @@ Holyshipper Containers (ephemeral, per-issue, managed by holyship-api via fleet)
 Issue arrives (GitHub webhook or "Ship It" button)
   → holyship-api creates entity in "spec" state
   → fleet provisions holyshipper container
-  → holyshipper claims work → runs Claude agent
+  → holyshipper claims work → runs OpenCode agent (via gateway)
   → agent reports signal → engine evaluates gate
      ├─ gate passes → transition → next state → holyshipper claims again
      ├─ gate fails → new invocation with failure context → holyshipper retries

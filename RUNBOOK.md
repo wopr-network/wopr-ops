@@ -4,9 +4,120 @@
 
 ## Current State
 
-**Status:** PRE-PRODUCTION — local stack fully functional with auth + dashboard
-**Last Updated:** 2026-03-15
-**Last Operation:** Auth-first flow wired end-to-end. GitHub OAuth login working. Dashboard surfaces issues from all connected repos with Ship It buttons. API proxy rewrite in place.
+**Status:** PRE-PRODUCTION — platform-core integration complete, gateway live, OpenCode SDK wired
+**Last Updated:** 2026-03-16
+**Last Operation:** Platform-core integration, inference gateway, OpenCode SDK swap, auto-pull cron.
+
+## 2026-03-16 — Holy Ship: Platform-Core Integration + OpenCode SDK + Gateway
+
+### What shipped
+
+- **Platform-core integration** — holyship is now a thin shell on `@wopr-network/platform-core`. Deleted 14,146 lines of standalone infrastructure (MCP server, CLI, config, seed, ingestion, hono-server, winston logger). Boot follows paperclip-platform pattern: DB → migrations → auth → credits → gateway → tRPC → engine → serve().
+- **Inference gateway** — metered OpenRouter proxy mounted at `/v1/chat/completions`. Per-tenant service keys (DB-backed, SHA-256 hashed). Budget check → upstream proxy → metering → credit debit. Tested end-to-end with GPT-4o-mini.
+- **Double-entry credit ledger** — platform-core's `DrizzleLedger` with `journal_entries` + `journal_lines` + `account_balances` tables. `grantSignupCredits()` grants $5 on user creation. Credits are nanodollars, integer math only.
+- **BetterAuth** — sessions, signup, login at `/api/auth/*`. GitHub OAuth social provider.
+- **Org/tenant support** — `DrizzleOrgMemberRepository` + `setTrpcOrgMemberRepo()` for multi-tenant isolation.
+- **Notification pipeline** — Resend email via `NotificationWorker`, polls every 30s, 29 templates seeded.
+- **Crypto payments** — BTCPay webhook at `/api/webhooks/crypto`. `DrizzleCryptoChargeRepository` + `DrizzleWebhookSeenRepository` for charge tracking + replay guard.
+- **tRPC router** — platform-core router at `/trpc/*` with BetterAuth session context.
+- **OpenCode SDK swap** — holyshipper replaces `@anthropic-ai/claude-agent-sdk` + `claude-code` CLI with `@opencode-ai/sdk` + `opencode` CLI. All inference routed through holyship gateway (metered, billed). Every SSE event logged with winston.
+- **Gateway usage sanitization** — platform-core 1.36.3 strips non-standard OpenRouter fields (`cost`, `cost_details`, `is_byok`, `prompt_tokens_details`, `completion_tokens_details`) from `usage` object. Fixes `DecimalError` in OpenCode's `@ai-sdk/openai-compatible` parser.
+- **Auto-pull cron** — `auto-pull.sh` runs every minute via cron, compares Docker image digests for api + ui, auto-restarts on new GHCR images. Replaces manual `docker compose pull`.
+- **Transitive deps** — added `winston`, `lru-cache`, `@noble/hashes`, `@scure/base`, `@scure/bip32`, `@scure/bip39`, `js-yaml`, `viem`, `yaml` as production deps (required by platform-core internally).
+
+### Docker Compose changes (`wopr-ops/local/holyship/`)
+
+New env vars added to API service:
+
+| Var | Purpose |
+|-----|---------|
+| `OPENROUTER_API_KEY` | Metered inference gateway (OpenRouter proxy) |
+| `FLEET_DATA_DIR=/tmp/fleet` | Writable path for meter WAL/DLQ (non-root container) |
+| `BETTER_AUTH_SECRET` | BetterAuth session signing |
+| `BETTER_AUTH_URL` | BetterAuth callback URL resolution |
+
+### Auto-pull cron
+
+```bash
+# Runs every minute — detects new GHCR images, auto-restarts containers
+* * * * * /home/tsavo/wopr-ops/local/holyship/auto-pull.sh >> /tmp/holyship-auto-pull.log 2>&1
+```
+
+### OpenCode SDK integration (holyshipper)
+
+Provider config written to `opencode.json` at container startup:
+```json
+{
+  "provider": {
+    "holyship": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Holy Ship Gateway",
+      "env": ["HOLYSHIP_GATEWAY_KEY"],
+      "options": { "baseURL": "http://api:3001/v1" },
+      "models": {
+        "anthropic/claude-sonnet-4-6": { "name": "Claude Sonnet" },
+        "openai/gpt-4o-mini": { "name": "GPT-4o Mini" }
+      }
+    }
+  }
+}
+```
+
+**Gotchas:**
+- Provider config MUST be in `opencode.json` on disk — Go server doesn't read SDK config param
+- Models MUST be declared explicitly or server returns `ProviderModelNotFoundError`
+- Body fields `providerID`/`modelID` are flat (not nested in `model` object)
+- `env: ["HOLYSHIP_GATEWAY_KEY"]` tells OpenCode which env var holds the API key
+- OpenCode server runs on port 4096 — kill stale processes before reinit
+- Permission auto-accept: `POST /session/:id/permissions/:permissionID` with `{ response: "always" }`
+
+### Gateway testing
+
+```bash
+# Create a service key for testing
+docker compose exec api node -e "
+import('@wopr-network/platform-core/credits').then(async ({ DrizzleLedger, grantSignupCredits }) => {
+  const { getPlatformDb } = await import('./dist/db/index.js');
+  const ledger = new DrizzleLedger(getPlatformDb());
+  await grantSignupCredits(ledger, 'default');
+  const bal = await ledger.balance('default');
+  console.log('Balance cents:', bal.toCents());
+  process.exit(0);
+});"
+
+# Insert service key (generate key + SHA-256 hash)
+node -e "const c=require('crypto');const k='sk-hs-'+c.randomBytes(24).toString('hex');console.log('Key:',k);console.log('Hash:',c.createHash('sha256').update(k).digest('hex'))"
+# Then INSERT INTO gateway_service_keys (id, key_hash, tenant_id, instance_id, created_at) VALUES (...)
+
+# Test gateway
+curl -s http://localhost:3001/v1/chat/completions \
+  -H "Authorization: Bearer sk-hs-<key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"Say Holy Ship"}],"max_tokens":10}'
+```
+
+### E2E verified
+
+```
+OpenCode SDK → OpenCode server (Go, port 4096) → holyship gateway (:3001/v1) → OpenRouter → GPT-4o-mini
+Response: "Holy Ship"
+Events streamed: server.connected → message.updated → step-start → text("Holy") → text("Holy Ship") → session.idle
+```
+
+### Open PRs at session end
+
+| Repo | PR | Status | What |
+|------|-----|--------|------|
+| holyshipper | #13 | Open | OpenCode SDK replaces Claude Code |
+| holyship | #200 | In queue | Bump platform-core to 1.36.3 (gateway fix) |
+
+### Remaining for production
+
+1. Merge holyshipper PR #13
+2. Wire fleet → engine bridge (entity created → provision holyshipper container)
+3. tRPC billing/org/profile/settings routers for UI
+4. Deploy to DO droplet (s-1vcpu-1gb, sfo2, 5GB swap)
+5. DNS: api.holyship.wtf + holyship.wtf A records → droplet IP, CF proxy OFF
 
 ## 2026-03-15 — Holy Ship: Auth Flow + Dashboard Issue Feed
 

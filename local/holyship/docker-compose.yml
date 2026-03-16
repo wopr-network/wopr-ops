@@ -61,6 +61,8 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
       BETTER_AUTH_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
       UI_ORIGIN: ${UI_ORIGIN:-https://holyship.wtf}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      FLEET_DATA_DIR: /tmp/fleet
     expose:
       - "3001"
     ports:
