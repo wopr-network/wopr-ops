@@ -66,6 +66,7 @@ services:
       # Worker pool — ephemeral holyshipper containers
       HOLYSHIP_WORKER_IMAGE: ${HOLYSHIP_WORKER_IMAGE:-ghcr.io/wopr-network/wopr-holyshipper-coder:latest}
       HOLYSHIP_GATEWAY_KEY: ${HOLYSHIP_GATEWAY_KEY}
+      HOLYSHIP_MODEL_TIER_OVERRIDE: ${HOLYSHIP_MODEL_TIER_OVERRIDE:-}
       DOCKER_NETWORK: holyship_holyship
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
