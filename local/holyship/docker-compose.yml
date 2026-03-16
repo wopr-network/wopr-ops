@@ -63,6 +63,12 @@ services:
       UI_ORIGIN: ${UI_ORIGIN:-https://holyship.wtf}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       FLEET_DATA_DIR: /tmp/fleet
+      # Worker pool — ephemeral holyshipper containers
+      HOLYSHIP_WORKER_IMAGE: ${HOLYSHIP_WORKER_IMAGE:-ghcr.io/wopr-network/holyshipper-coder:latest}
+      HOLYSHIP_GATEWAY_KEY: ${HOLYSHIP_GATEWAY_KEY}
+      DOCKER_NETWORK: holyship_holyship
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     expose:
       - "3001"
     ports:
