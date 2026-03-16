@@ -4,9 +4,107 @@
 
 ## Current State
 
-**Status:** PRE-PRODUCTION — not yet deployed to VPS
+**Status:** PRE-PRODUCTION — local stack fully functional with auth + dashboard
 **Last Updated:** 2026-03-15
-**Last Operation:** Holy Ship local stack fully tested — 4 containers (postgres, api, ui, caddy) all healthy. All 6 UI routes verified. Signal orange theme rendering. GitHub App created and installed.
+**Last Operation:** Auth-first flow wired end-to-end. GitHub OAuth login working. Dashboard surfaces issues from all connected repos with Ship It buttons. API proxy rewrite in place.
+
+## 2026-03-15 — Holy Ship: Auth Flow + Dashboard Issue Feed
+
+### What shipped
+
+- **Auth-first CTA flow** — Marketing CTAs route to `/login` (not `/connect`). Users authenticate via GitHub OAuth, land on dashboard, connect repos from there.
+- **GitHub OAuth working** — better-auth GitHub social provider wired via platform-core. Requires `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` in API container.
+- **OAuth callback fix** — `callbackURL` must be absolute (`window.location.origin + path`) or better-auth resolves relative paths against `BETTER_AUTH_URL` (API domain, not UI domain).
+- **API proxy rewrite** — `next.config.ts` rewrites `/api/*` to holyship backend. Uses `API_INTERNAL_URL` (Docker: `http://api:3001`) at build time. Avoids CORS/TLS issues for server-side proxying.
+- **`/api/github/repos` endpoint** — Lists repos from GitHub App installations. Auto-syncs installations from GitHub API when DB is empty (no webhook dependency).
+- **`/api/github/issues` endpoint** — Lists open issues for a repo. Filters out PRs.
+- **`/api/github/sync-installations` endpoint** — Explicit sync trigger for installations (POST).
+- **Route ordering fix** — GitHub UI endpoints mounted BEFORE engine routes to avoid worker token auth middleware catching them.
+- **Dashboard issue feed** — Fetches issues across ALL connected repos in parallel. Shows issue title, labels, age, repo name. Ship It button per issue. "Holy Ship!" on success. No repo picker gate.
+- **Login page cleanup** — Removed stale "Install the GitHub App" copy, removed `isPending` button disable.
+
+### Docker Compose changes (`wopr-ops/local/holyship/`)
+
+New env vars in `docker-compose.yml`:
+
+| Service | Var | Value | Purpose |
+|---------|-----|-------|---------|
+| api | `GITHUB_APP_CLIENT_ID` | `${GITHUB_APP_CLIENT_ID}` | GitHub App OAuth (for token-generator) |
+| api | `GITHUB_APP_CLIENT_SECRET` | `${GITHUB_APP_CLIENT_SECRET}` | GitHub App OAuth secret |
+| api | `GITHUB_CLIENT_ID` | `${GITHUB_APP_CLIENT_ID}` | better-auth social provider (different name!) |
+| api | `GITHUB_CLIENT_SECRET` | `${GITHUB_APP_CLIENT_SECRET}` | better-auth social provider |
+| api | `BETTER_AUTH_SECRET` | `${BETTER_AUTH_SECRET}` | Session signing key |
+| api | `BETTER_AUTH_URL` | `${NEXT_PUBLIC_API_URL}` | Public URL for OAuth redirect_uri construction |
+| ui | `API_INTERNAL_URL` | `http://api:3001` | Docker-internal URL for Next.js rewrite proxy |
+| ui (build arg) | `API_INTERNAL_URL` | `http://api:3001` | Baked into standalone build |
+
+New env vars in `.env`:
+
+| Var | Purpose |
+|-----|---------|
+| `GITHUB_APP_CLIENT_ID` | From GitHub App settings → Client ID |
+| `GITHUB_APP_CLIENT_SECRET` | From GitHub App settings → Generate client secret |
+| `BETTER_AUTH_SECRET` | Random 64-char hex for session signing |
+
+### Caddyfile (local dev)
+
+Changed to `tls internal` for local development. Accept cert warnings in browser on first visit.
+
+```
+holyship.wtf, www.holyship.wtf {
+    tls internal
+    reverse_proxy ui:3000
+}
+api.holyship.wtf {
+    tls internal
+    reverse_proxy api:3001
+}
+```
+
+### Windows hosts file
+
+Add to `C:\Windows\System32\drivers\etc\hosts`:
+```
+127.0.0.1 holyship.wtf api.holyship.wtf
+```
+
+### GitHub App setup
+
+| Setting | Value |
+|---------|-------|
+| Callback URL | `https://api.holyship.wtf/api/auth/callback/github` |
+| Webhook URL | `https://api.holyship.wtf/api/github/webhook` |
+
+### Local test results
+
+| Route | Status |
+|-------|--------|
+| `/` | 200 — Landing page with rotating taglines |
+| `/login` | 200 — GitHub OAuth button (redirects to GitHub) |
+| `/how-it-works` | 200 — "Get Started" CTA → `/login` |
+| `/dashboard` | 200 — Issue feed across all repos + Ship It buttons |
+| `/ship` | 200 — Repo picker + issue shipper |
+| `/approvals` | 200 |
+| `/connect` | 307 → GitHub App install (dashboard-only action) |
+
+### Gotchas
+
+- **CORS**: `UI_ORIGIN` must include `http://localhost:3002` for local browser dev. Production: just `https://holyship.wtf`.
+- **BETTER_AUTH_URL default**: platform-core defaults to `http://localhost:3100` if `BETTER_AUTH_URL` is unset — causes wrong `redirect_uri` in OAuth flow.
+- **GITHUB_CLIENT_ID vs GITHUB_APP_CLIENT_ID**: platform-core reads `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`. The `.env` stores them as `GITHUB_APP_CLIENT_ID`/`GITHUB_APP_CLIENT_SECRET`. Docker-compose maps both names.
+- **Engine auth middleware**: Engine routes at `/api/*` have a `/*` worker token middleware. Any new UI-facing `/api/` endpoints MUST be mounted BEFORE `app.route("/api", createEngineRoutes(...))` or they'll 401.
+- **Next.js standalone rewrites**: `NEXT_PUBLIC_*` and `API_INTERNAL_URL` are baked at build time. Runtime env vars don't override. Must rebuild UI image to change API URL.
+- **GitHub webhook unreachable locally**: Installations auto-sync from GitHub API on first `/api/github/repos` call when DB is empty. No webhook needed for local dev.
+
+### Open PRs
+
+| Repo | PR | Status |
+|------|----|--------|
+| holyship | #197 | In merge queue — repos, issues, sync endpoints |
+| holyship-platform-ui | #42 | Auto-merge — dashboard issue feed |
+| holyship-platform-ui | #43 | Auto-merge — Dockerfile API_INTERNAL_URL |
+
+---
 
 ## 2026-03-15 — Holy Ship: Full Platform Build + Local Stack Verified
 

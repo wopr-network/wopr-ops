@@ -1,12 +1,20 @@
-# Holy Ship — production Caddyfile
+# Holy Ship — local dev Caddyfile
 #
-# Caddy auto-provisions TLS via Let's Encrypt.
-# DNS must point api.holyship.wtf and holyship.wtf at this server.
+# Uses Caddy's internal CA for TLS (self-signed, trusted locally).
+# DNS: add "127.0.0.1 holyship.wtf api.holyship.wtf" to hosts file.
+
+# Holy Ship — local dev Caddyfile
+#
+# Uses Caddy's internal CA for local TLS.
+# Add "127.0.0.1 holyship.wtf api.holyship.wtf" to hosts file.
+# Accept the cert warning in your browser on first visit.
 
 holyship.wtf, www.holyship.wtf {
+	tls internal
 	reverse_proxy ui:3000
 }
 
 api.holyship.wtf {
+	tls internal
 	reverse_proxy api:3001
 }

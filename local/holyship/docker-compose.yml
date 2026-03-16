@@ -53,7 +53,13 @@ services:
       HOLYSHIP_WORKER_TOKEN: ${HOLYSHIP_WORKER_TOKEN}
       GITHUB_APP_ID: ${GITHUB_APP_ID}
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}
+      GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID}
+      GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET}
+      GITHUB_CLIENT_ID: ${GITHUB_APP_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
       UI_ORIGIN: ${UI_ORIGIN:-https://holyship.wtf}
     expose:
       - "3001"
@@ -73,6 +79,7 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
+        API_INTERNAL_URL: http://api:3001
         NEXT_PUBLIC_GITHUB_APP_URL: ${NEXT_PUBLIC_GITHUB_APP_URL:-https://github.com/apps/holyship}
         NEXT_PUBLIC_BRAND_PRODUCT_NAME: ${NEXT_PUBLIC_BRAND_PRODUCT_NAME:-Holy Ship}
         NEXT_PUBLIC_BRAND_DOMAIN: ${NEXT_PUBLIC_BRAND_DOMAIN:-holyship.wtf}
@@ -83,6 +90,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    environment:
+      API_INTERNAL_URL: http://api:3001
     expose:
       - "3000"
     ports:
@@ -110,6 +119,7 @@ services:
     restart: unless-stopped
     networks:
       - holyship
+
 
 volumes:
   postgres_data:
