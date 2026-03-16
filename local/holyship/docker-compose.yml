@@ -68,6 +68,8 @@ services:
       HOLYSHIP_GATEWAY_KEY: ${HOLYSHIP_GATEWAY_KEY}
       HOLYSHIP_MODEL_TIER_OVERRIDE: ${HOLYSHIP_MODEL_TIER_OVERRIDE:-}
       DOCKER_NETWORK: holyship_holyship
+    group_add:
+      - "${DOCKER_GID:-1001}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     expose:

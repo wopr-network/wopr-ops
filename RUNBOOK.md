@@ -4,9 +4,9 @@
 
 ## Current State
 
-**Status:** PRE-PRODUCTION — full tRPC UI routers, reactive worker pool, OpenCode SDK, GHCR publish pipeline
+**Status:** PRE-PRODUCTION — E2E verified, Instance abstraction, ready for DO deployment
 **Last Updated:** 2026-03-16
-**Last Operation:** tRPC routers, reactive worker pool, FleetManager export, multi-stage Dockerfiles.
+**Last Operation:** E2E smoke test verified (19 PRs), Instance abstraction in platform-core 1.39, signal format fixes.
 
 ## 2026-03-16 — Holy Ship: Platform-Core Integration + OpenCode SDK + Gateway
 
@@ -188,12 +188,149 @@ CI publish was failing because `dist/` doesn't exist in the repo.
 
 Added `FleetManager` to the barrel export at `@wopr-network/platform-core/fleet`. Was only importable via direct file path. Holyship needs it for ephemeral container provisioning.
 
+## 2026-03-16 (session 3) — E2E Smoke Test + Instance Abstraction
+
+### What shipped (19 PRs across 3 repos)
+
+| # | Repo | PR | What |
+|---|------|-----|------|
+| 1 | holyshipper | #16 | OpenCode install fix (curl script, not npm) |
+| 2 | holyshipper | #17 | Test model tier (free Gemma 27B) |
+| 3 | holyshipper | #18 | OpenCode binary copy to /usr/local/bin |
+| 4 | holyshipper | #19 | Bare-word signal patterns for engineering flow |
+| 5 | holyship | #205 | Dead code removal (entity-lifecycle, resolve-runner-url) |
+| 6 | holyship | #206 | HOLYSHIP_MODEL_TIER_OVERRIDE env var |
+| 7 | holyship | #208 | Admin entity creation endpoint (POST /api/entities) |
+| 8 | holyship | #209 | Worker pool claims on entity.created |
+| 9 | holyship | #210 | Comprehensive worker pool logging |
+| 10 | holyship | #211 | EventEmitter structured logging + pino injection |
+| 11 | holyship | #212 | Direct schedule after claimWork (root cause fix) |
+| 12 | holyship | #213 | runner_url Drizzle migration |
+| 13 | holyship | #214 | UUID profile ID for FleetManager |
+| 14 | holyship | #215 | createAndStart + network + ephemeral (platform-core 1.38) |
+| 15 | holyship | #217 | Use Instance abstraction (platform-core 1.39) |
+| 16 | holyship | #218 | Clearer signal instructions in flow prompts |
+| 17 | platform-core | #84 | createAndStart, network, ephemeral in FleetManager (1.38) |
+| 18 | platform-core | #85 | Instance abstraction — lifecycle off FleetManager (1.39) |
+| 19 | wopr-ops | (direct) | Docker compose group_add + model tier override |
+
+### Instance abstraction (platform-core 1.39)
+
+**The key architectural change.** `FleetManager.create()` now returns an `Instance` — a runtime handle to a container:
+
+```typescript
+const instance = await fleet.create({ ...profile, ephemeral: true, network: "holyship_holyship" });
+await instance.start();
+// instance.url — resolved from Docker inspection, no naming convention leaks
+// instance.status() — "running" | "stopped" | "gone"
+await instance.remove(); // teardown
+```
+
+- **BotProfile** = spec (what to create)
+- **BotInstance** = billing DB record (long-lived bots only)
+- **Instance** = runtime handle (ephemeral or persistent)
+- Ephemeral containers skip billing + proxy — bill per-token at gateway
+- `Instance.setupBilling()` / `Instance.setupProxy()` for non-ephemeral
+- Events: `bot.created`, `bot.started`, `bot.stopped`, `bot.removed`
+- `FleetManager.start()` / `stop()` removed — lifecycle on Instance
+
+### E2E smoke test — verified working
+
+Full pipeline confirmed end-to-end on local stack:
+
+```
+entity.created → claimWork → invocation.created → worker starts
+  → FleetManager.create() → docker pull → container created
+  → instance.start() → container started on holyship_holyship network
+  → health check passes (instance.url from Docker inspection)
+  → POST /credentials (gateway key + GitHub token)
+  → POST /dispatch (prompt, modelTier: "test")
+  → OpenCode SDK → opencode serve (Go binary) → holyship gateway → OpenRouter → Gemma 27B (free)
+  → SSE stream: session → text → result (costUsd: 0, isError: false, stopReason: "end_turn")
+  → parseSignal() → signal extracted
+  → engine.processSignal() → gate evaluation
+  → instance.remove() → container torn down
+  → worker finished
+```
+
+Timing: provision 2.1s, dispatch 1.8s, total ~10s including image pull cache hit.
+
+### Smoke test procedure
+
+```bash
+# 1. Ensure stack is running
+cd ~/wopr-ops/local/holyship
+docker compose up -d
+
+# 2. Verify API health
+curl -s http://localhost:3001/health
+# → {"status":"ok"}
+
+# 3. Check worker pool initialized
+docker logs holyship-api --tail 5 | grep "worker-pool"
+# → [worker-pool] initialized {"poolSize":4,"tierOverride":"test"}
+
+# 4. Create entity (requires HOLYSHIP_WORKER_TOKEN from .env)
+curl -s -X POST http://localhost:3001/api/entities \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $(grep HOLYSHIP_WORKER_TOKEN .env | cut -d= -f2)" \
+  -d '{
+    "flow": "engineering",
+    "refs": {
+      "repoFullName": "wopr-network/holyship",
+      "issueNumber": 1,
+      "issueTitle": "Test entity",
+      "issueBody": "Smoke test."
+    }
+  }'
+
+# 5. Watch logs (entity → claim → provision → dispatch → signal → teardown)
+docker logs holyship-api -f --since 30s | grep -E 'worker-pool|worker-1|fleet|EventEmitter'
+
+# 6. Check container lifecycle
+docker ps --filter "name=wopr-hs"  # Should appear then disappear
+```
+
+### Debugging guide
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| No logs after entity creation | Worker pool not registered | Check `Reactive worker pool registered` in startup logs |
+| `entity.created` but no `claimWork` | Worker pool not listening | Check `eventEmitter.register(workerPool)` in index.ts |
+| `claimWork returned no work` | No unclaimed entities | Check entity state via GET /api/entities |
+| `claimWork succeeded` but no worker starts | Missing direct schedule | PR #212 — claimWork doesn't emit invocation.created |
+| `provision FAILED: Invalid profile ID` | Non-UUID bot ID | Use crypto.randomUUID() for profile ID |
+| `provision FAILED: EACCES docker.sock` | Socket permissions | group_add in docker-compose.yml |
+| `Container did not become ready` | Wrong DNS name / not started | Instance abstraction (PR #217) fixes this |
+| `spawn opencode ENOENT` | Binary not on PATH | cp to /usr/local/bin (PR #18) |
+| `SSE error events` / `no result` | OpenCode SDK config issue | Check opencode.json, gateway URL, HOLYSHIP_GATEWAY_KEY |
+| `signal: "unknown"` | Model didn't output signal format | Check prompt template + parseSignal patterns |
+| `No transition on signal "unknown"` | Signal not in flow | Add bare-word pattern to parseSignal (PR #19) |
+
+### Docker compose changes (session 3)
+
+```yaml
+# API service additions:
+group_add:
+  - "${DOCKER_GID:-1001}"        # Docker socket access for non-root
+environment:
+  HOLYSHIP_MODEL_TIER_OVERRIDE: ${HOLYSHIP_MODEL_TIER_OVERRIDE:-}  # "test" for free models
+```
+
+### .env additions
+
+```bash
+HOLYSHIP_GATEWAY_KEY=sk-hs-...   # Gateway service key (from session 1)
+HOLYSHIP_MODEL_TIER_OVERRIDE=test # Force free model for smoke testing (unset for production)
+```
+
 ### Remaining for production
 
-1. Verify holyshipper GHCR images published after #14 merges
-2. E2E smoke test on local stack (entity → container → dispatch → signal → teardown)
+1. Close PR #216 (superseded by Instance abstraction)
+2. Clean up stale test entities in DB
 3. Deploy to DO droplet
 4. DNS: api.holyship.wtf + holyship.wtf A records → droplet IP
+5. Remove `HOLYSHIP_MODEL_TIER_OVERRIDE=test` for production (use real models)
 
 ## 2026-03-15 — Holy Ship: Auth Flow + Dashboard Issue Feed
 
