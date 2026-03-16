@@ -4,9 +4,9 @@
 
 ## Current State
 
-**Status:** PRE-PRODUCTION — platform-core integration complete, gateway live, OpenCode SDK wired
+**Status:** PRE-PRODUCTION — full tRPC UI routers, reactive worker pool, OpenCode SDK, GHCR publish pipeline
 **Last Updated:** 2026-03-16
-**Last Operation:** Platform-core integration, inference gateway, OpenCode SDK swap, auto-pull cron.
+**Last Operation:** tRPC routers, reactive worker pool, FleetManager export, multi-stage Dockerfiles.
 
 ## 2026-03-16 — Holy Ship: Platform-Core Integration + OpenCode SDK + Gateway
 
@@ -104,20 +104,96 @@ Response: "Holy Ship"
 Events streamed: server.connected → message.updated → step-start → text("Holy") → text("Holy Ship") → session.idle
 ```
 
-### Open PRs at session end
+### Open PRs at session end (earlier session)
 
-| Repo | PR | Status | What |
-|------|-----|--------|------|
-| holyshipper | #13 | Open | OpenCode SDK replaces Claude Code |
-| holyship | #200 | In queue | Bump platform-core to 1.36.3 (gateway fix) |
+All merged by follow-up session (see below).
+
+## 2026-03-16 (session 2) — tRPC Routers + Reactive Worker Pool + GHCR Publish
+
+### What shipped (8 PRs)
+
+| # | Repo | PR | What |
+|---|------|-----|------|
+| 1 | platform-core | #83 | Export `FleetManager` from fleet index (published as 1.37.0) |
+| 2 | holyship | #201 | tRPC billing/org/profile/settings routers for UI |
+| 3 | holyship | #202 | Ephemeral fleet lifecycle (`EntityLifecycleManager`) |
+| 4 | holyship | #203 | Runner URL persisted to DB (not in-memory Map) |
+| 5 | holyship | #204 | Reactive worker pool replaces lifecycle manager |
+| 6 | holyshipper | #13 | OpenCode SDK swap (replaces Claude Code) |
+| 7 | holyshipper | #14 | Multi-stage Dockerfiles for CI publish |
+| 8 | wopr-ops | (direct) | Docker compose: worker pool env vars + Docker socket mount |
+
+### tRPC routers (holyship #201)
+
+Full billing/org/profile/settings router suite for the holyship-ui dashboard:
+
+- **billing** — 30+ procedures: credits balance/history, Stripe checkout, crypto checkout, auto-topup, spending limits, plans, usage, dividends, affiliates, coupons
+- **org** — CRUD, member invites/roles, org-scoped billing
+- **profile** — get/update, password change
+- **settings** — health, tenant config, notification prefs
+
+Pattern: `set*RouterDeps()` at boot → lazy singleton injection. Same as paperclip-platform.
+
+### Reactive worker pool (holyship #204)
+
+Replaced event-driven `EntityLifecycleManager` + polling dispatcher with a single reactive `WorkerPool` that implements `IEventBusAdapter`:
+
+```
+invocation.created event
+  → WorkerPool.emit()
+  → slot available? → worker takes it
+    → HolyshipperFleetManager.provision() → FleetManager.create() → Docker
+    → POST /credentials (gateway key, GH token)
+    → POST /checkout (clone repo)
+    → POST /dispatch (prompt via OpenCode → gateway → OpenRouter)
+    → parse SSE result → signal + artifacts
+    → engine.processSignal() → gate eval via POST /gate to same container
+    → FleetManager.remove() → teardown
+    → slot freed → next queued event drains
+```
+
+- No polling, no sleep loops — purely reactive off engine events
+- Bounded concurrency (4 slots), overflow queues and drains
+- Runner URL written to `holyshipper_containers` DB table (survives restarts)
+- Each container is ephemeral: one invocation cycle, then torn down
+- Gate failure = transition + teardown + new container for next invocation
+
+### Docker compose changes
+
+New env vars in API service:
+
+| Var | Purpose |
+|-----|---------|
+| `HOLYSHIP_WORKER_IMAGE` | GHCR image for holyshipper workers (default: `ghcr.io/wopr-network/wopr-holyshipper-coder:latest`) |
+| `HOLYSHIP_GATEWAY_KEY` | Gateway service key for container auth |
+| `DOCKER_NETWORK` | Docker network for container connectivity (`holyship_holyship`) |
+
+New volume mount: `/var/run/docker.sock:/var/run/docker.sock` (API needs Docker socket to provision containers)
+
+### Multi-stage Dockerfiles (holyshipper #14)
+
+Worker Dockerfiles now have a build stage that compiles TypeScript:
+```dockerfile
+FROM node:24-slim AS build
+RUN npm install -g pnpm
+COPY ... && pnpm install && pnpm -C packages/worker-runtime run build
+
+FROM node:24-slim
+COPY --from=build /build/packages/worker-runtime/dist ...
+```
+
+CI publish was failing because `dist/` doesn't exist in the repo.
+
+### platform-core 1.37.0
+
+Added `FleetManager` to the barrel export at `@wopr-network/platform-core/fleet`. Was only importable via direct file path. Holyship needs it for ephemeral container provisioning.
 
 ### Remaining for production
 
-1. Merge holyshipper PR #13
-2. Wire fleet → engine bridge (entity created → provision holyshipper container)
-3. tRPC billing/org/profile/settings routers for UI
-4. Deploy to DO droplet (s-1vcpu-1gb, sfo2, 5GB swap)
-5. DNS: api.holyship.wtf + holyship.wtf A records → droplet IP, CF proxy OFF
+1. Verify holyshipper GHCR images published after #14 merges
+2. E2E smoke test on local stack (entity → container → dispatch → signal → teardown)
+3. Deploy to DO droplet
+4. DNS: api.holyship.wtf + holyship.wtf A records → droplet IP
 
 ## 2026-03-15 — Holy Ship: Auth Flow + Dashboard Issue Feed
 
