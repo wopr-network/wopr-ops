@@ -4,9 +4,44 @@
 
 ## Current State
 
-**Status:** PRE-PRODUCTION — E2E verified, Instance abstraction, ready for DO deployment
-**Last Updated:** 2026-03-16
-**Last Operation:** E2E smoke test verified (19 PRs), Instance abstraction in platform-core 1.39, signal format fixes.
+**Status:** PRODUCTION — wopr.bot live on DO droplet 142.93.94.9
+**Last Updated:** 2026-03-17
+**Last Operation:** Full production deployment — droplet provisioned, DNS configured, TLS provisioned, all services healthy.
+
+## 2026-03-17 — WOPR Platform Production Launch
+
+### What shipped
+
+- **DO droplet provisioned** — `wopr-platform`, s-1vcpu-1gb, sfo2, 142.93.94.9
+- **DNS configured** — wopr.bot + api.wopr.bot + app.wopr.bot → 142.93.94.9 (Cloudflare, proxy OFF)
+- **TLS provisioned** — Let's Encrypt via Caddy + Cloudflare DNS-01 challenge
+- **Full stack running** — Postgres (healthy), platform-api (healthy), platform-ui (healthy), Caddy (TLS)
+- **Dockerfile fixes** — npm→pnpm, alpine→bookworm-slim (both repos)
+- **BetterAuth init fix** — `initBetterAuth()` must be called before `getEmailVerifier()` (platform-core v1.39 requirement)
+- **Missing env vars** — PLATFORM_SECRET, PLATFORM_ENCRYPTION_SECRET, STRIPE_CREDIT_PRICE_*, DO_API_TOKEN added to docker-compose.yml
+- **Deploy workflow fix** — platform-ui deploy now uses shared compose at /opt/wopr-platform/ instead of standalone /opt/wopr-platform-ui/
+- **Cloud-init script** — `wopr-ops/vps/cloud-init.sh` for reproducible droplet provisioning
+- **GitHub secrets configured** — PROD_HOST, PROD_SSH_KEY (wopr-platform); STAGING_HOST, SSH_DEPLOY_KEY, SSH_DEPLOY_USER, STAGING_API_URL (wopr-platform-ui)
+- **GHCR auth** — deploy user on droplet logged into ghcr.io for image pulls
+
+### Verification
+
+```
+https://wopr.bot         → 200 OK
+https://api.wopr.bot/health → {"status":"ok","service":"wopr-platform"}
+https://app.wopr.bot     → 200 OK
+```
+
+### SSH access
+
+```bash
+ssh root@142.93.94.9      # admin
+ssh deploy@142.93.94.9    # deploy user (used by GitHub Actions)
+```
+
+### Compose stack location
+
+`/opt/wopr-platform/` — docker-compose.yml, Caddyfile, caddy/Dockerfile, .env
 
 ## 2026-03-16 — Holy Ship: Platform-Core Integration + OpenCode SDK + Gateway
 
