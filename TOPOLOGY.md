@@ -72,11 +72,11 @@ push to main (any repo)
 ```
 Internet
   └─ Cloudflare DNS (proxy OFF — required for Caddy DNS-01)
-       ├─ wopr.bot        → 206.189.210.222
-       ├─ app.wopr.bot    → 206.189.210.222
-       └─ api.wopr.bot    → 206.189.210.222
+       ├─ wopr.bot        → 206.189.173.166
+       ├─ app.wopr.bot    → 206.189.173.166
+       └─ api.wopr.bot    → 206.189.173.166
 
-VPS (DigitalOcean — wopr-platform, s-1vcpu-1gb, sfo2, 206.189.210.222)
+VPS (DigitalOcean — wopr-platform, s-1vcpu-1gb, sfo2, 206.189.173.166)
   └─ docker-compose.yml
        ├─ caddy:2-alpine                (80, 443)
        │    ├─ wopr.bot/            → platform-ui:3000
