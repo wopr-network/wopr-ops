@@ -196,32 +196,11 @@ networks:
     name: wopr-platform
 COMPOSEEOF
 
-# --- .env (REPLACE VALUES or use vps/.env.production) ---
-# If /opt/wopr-platform/.env doesn't exist yet, create a template.
-# In practice, scp vps/.env.production to the droplet before first boot,
-# or fill these in via the DO API user_data.
-if [ ! -f /opt/wopr-platform/.env ]; then
-  cat > /opt/wopr-platform/.env << 'ENVEOF'
-DOMAIN=wopr.bot
-POSTGRES_PASSWORD=REPLACE_ME
-STRIPE_SECRET_KEY=REPLACE_ME
-STRIPE_WEBHOOK_SECRET=REPLACE_ME
-STRIPE_DEFAULT_PRICE_ID=REPLACE_ME
-STRIPE_CREDIT_PRICE_5=REPLACE_ME
-STRIPE_CREDIT_PRICE_10=REPLACE_ME
-STRIPE_CREDIT_PRICE_25=REPLACE_ME
-STRIPE_CREDIT_PRICE_50=REPLACE_ME
-STRIPE_CREDIT_PRICE_100=REPLACE_ME
-BETTER_AUTH_SECRET=REPLACE_ME
-RESEND_API_KEY=REPLACE_ME
-CLOUDFLARE_API_TOKEN=REPLACE_ME
-PLATFORM_SECRET=REPLACE_ME
-PLATFORM_ENCRYPTION_SECRET=REPLACE_ME
-DO_API_TOKEN=REPLACE_ME
-OPENROUTER_API_KEY=REPLACE_ME
-GHCR_TOKEN=REPLACE_ME
-ENVEOF
-fi
+# --- .env ---
+# Injected by provision.sh (replaces this marker with real values).
+# If running cloud-init standalone, scp vps/.env.production to
+# /opt/wopr-platform/.env before the droplet boots.
+# ENV_INJECT_MARKER
 
 chmod 600 /opt/wopr-platform/.env
 chown deploy:deploy /opt/wopr-platform/.env

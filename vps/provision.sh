@@ -57,7 +57,20 @@ fi
 
 # --- Step 1: Create droplet ---
 echo "==> Creating droplet..."
-CLOUD_INIT=$(cat "$SCRIPT_DIR/cloud-init.sh")
+ENV_FILE="${SCRIPT_DIR}/.env.production"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "ERROR: $ENV_FILE not found. Copy .env.production.example and fill in secrets."
+  exit 1
+fi
+
+# Inject .env.production into cloud-init (replaces the marker)
+CLOUD_INIT=$(python3 -c "
+import sys
+ci = open('$SCRIPT_DIR/cloud-init.sh').read()
+env = open('$ENV_FILE').read()
+heredoc = \"cat > /opt/wopr-platform/.env << 'ENVEOF'\n\" + env.strip() + \"\nENVEOF\"
+print(ci.replace('# ENV_INJECT_MARKER', heredoc))
+")
 IFS=',' read -ra KEYS <<< "$SSH_KEY_IDS"
 KEY_JSON=$(printf '%s\n' "${KEYS[@]}" | jq -R 'tonumber' | jq -s '.')
 
