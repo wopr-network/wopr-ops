@@ -4,7 +4,7 @@
 
 ## Current State
 
-**Status:** PRODUCTION — wopr.bot live on DO droplet 142.93.94.9
+**Status:** PRODUCTION — wopr.bot live on DO droplet 206.189.210.222
 **Last Updated:** 2026-03-17
 **Last Operation:** Full production deployment — droplet provisioned, DNS configured, TLS provisioned, all services healthy.
 
@@ -12,8 +12,8 @@
 
 ### What shipped
 
-- **DO droplet provisioned** — `wopr-platform`, s-1vcpu-1gb, sfo2, 142.93.94.9
-- **DNS configured** — wopr.bot + api.wopr.bot + app.wopr.bot → 142.93.94.9 (Cloudflare, proxy OFF)
+- **DO droplet provisioned** — `wopr-platform`, s-1vcpu-1gb, sfo2, 206.189.210.222
+- **DNS configured** — wopr.bot + api.wopr.bot + app.wopr.bot → 206.189.210.222 (Cloudflare, proxy OFF)
 - **TLS provisioned** — Let's Encrypt via Caddy + Cloudflare DNS-01 challenge
 - **Full stack running** — Postgres (healthy), platform-api (healthy), platform-ui (healthy), Caddy (TLS)
 - **Dockerfile fixes** — npm→pnpm, alpine→bookworm-slim (both repos)
@@ -35,8 +35,8 @@ https://app.wopr.bot     → 200 OK
 ### SSH access
 
 ```bash
-ssh root@142.93.94.9      # admin
-ssh deploy@142.93.94.9    # deploy user (used by GitHub Actions)
+ssh root@206.189.210.222      # admin
+ssh deploy@206.189.210.222    # deploy user (used by GitHub Actions)
 ```
 
 ### Compose stack location
