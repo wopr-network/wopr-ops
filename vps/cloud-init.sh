@@ -162,8 +162,9 @@ services:
       - PLATFORM_SECRET=${PLATFORM_SECRET}
       - PLATFORM_ENCRYPTION_SECRET=${PLATFORM_ENCRYPTION_SECRET}
       - WOPR_BOT_IMAGE=ghcr.io/wopr-network/wopr:latest
-      - NODE_ENV=production
       - DO_API_TOKEN=${DO_API_TOKEN}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - NODE_ENV=production
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
       interval: 30s
@@ -217,11 +218,21 @@ CLOUDFLARE_API_TOKEN=REPLACE_ME
 PLATFORM_SECRET=REPLACE_ME
 PLATFORM_ENCRYPTION_SECRET=REPLACE_ME
 DO_API_TOKEN=REPLACE_ME
+OPENROUTER_API_KEY=REPLACE_ME
+GHCR_TOKEN=REPLACE_ME
 ENVEOF
 fi
 
 chmod 600 /opt/wopr-platform/.env
 chown deploy:deploy /opt/wopr-platform/.env
+
+# --- GHCR login (images are private) ---
+GHCR_TOKEN=$(grep GHCR_TOKEN /opt/wopr-platform/.env | cut -d= -f2)
+if [ -n "$GHCR_TOKEN" ] && [ "$GHCR_TOKEN" != "REPLACE_ME" ]; then
+  echo "$GHCR_TOKEN" | docker login ghcr.io -u wopr-network --password-stdin
+  # Also set up for deploy user
+  su - deploy -c "echo $GHCR_TOKEN | docker login ghcr.io -u wopr-network --password-stdin"
+fi
 
 # --- Pull images and start ---
 cd /opt/wopr-platform
