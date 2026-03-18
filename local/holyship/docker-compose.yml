@@ -76,6 +76,7 @@ services:
       BTCPAY_STORE_ID: ${BTCPAY_STORE_ID:-}
       BTCPAY_WEBHOOK_SECRET: ${BTCPAY_WEBHOOK_SECRET:-}
       EVM_XPUB: ${EVM_XPUB:-}
+      EVM_RPC_BASE: ${EVM_RPC_BASE:-https://mainnet.base.org}
     group_add:
       - "${DOCKER_GID:-1001}"
     volumes:
