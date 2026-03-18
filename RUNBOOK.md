@@ -4,9 +4,70 @@
 
 ## Current State
 
-**Status:** PRODUCTION — wopr.bot live on DO droplet 206.189.173.166
-**Last Updated:** 2026-03-17
-**Last Operation:** Full production deployment — droplet provisioned, DNS configured, TLS provisioned, all services healthy.
+**Status:** PRODUCTION — wopr.bot live on DO droplet 206.189.173.166; nemopod.com live on DO droplet 159.89.140.143
+**Last Updated:** 2026-03-18
+**Last Operation:** NemoClaw full production deployment — Stripe webhook + credits verified, inference gateway wired, DNS wildcard set, CI/CD green, auto-deploy live.
+
+## 2026-03-18 — NemoClaw Platform Production
+
+### What shipped
+- Stripe webhook → credit grant working (fixed null `session.customer` bug in platform-core v1.42.2)
+- Inference gateway: `GATEWAY_URL=https://api.nemopod.com/v1` + `OPENROUTER_API_KEY` — provisioned NemoClaw containers route through platform for per-tenant metered billing
+- Per-tenant gateway service keys auto-provisioned at container creation
+- Domain: all `runnemo.com` references replaced with `nemopod.com` (we own nemopod.com)
+- DNS wildcard `*.nemopod.com → 159.89.140.143` added to Cloudflare
+- Deploy SSH key provisioned for nemoclaw-platform-ui → droplet
+- CI green on both repos; auto-deploy wired (CI pass → SSH → docker compose pull + up)
+- E2E Playwright test for checkout flow (skipped in CI, `RUN_E2E=1` to run locally)
+
+### Stack location
+- Droplet: `deploy@159.89.140.143`
+- Compose: `/opt/nemoclaw-platform/docker-compose.yml`
+
+### SSH access
+```bash
+ssh deploy@159.89.140.143
+```
+
+### Compose operations
+```bash
+# Restart all
+ssh deploy@159.89.140.143 "cd /opt/nemoclaw-platform && docker compose up -d"
+
+# Pull latest and restart
+ssh deploy@159.89.140.143 "cd /opt/nemoclaw-platform && docker compose pull && docker compose up -d"
+
+# Check health
+ssh deploy@159.89.140.143 "cd /opt/nemoclaw-platform && docker compose ps"
+```
+
+### Health check URLs
+- https://api.nemopod.com/health
+- https://app.nemopod.com
+- https://nemopod.com
+
+### E2E Stripe webhook test (run locally)
+```bash
+cd ~/nemoclaw-platform
+STRIPE_WEBHOOK_SECRET=<from .env> RUN_E2E=1 npx vitest run src/routes/stripe-webhook.e2e.test.ts
+```
+
+### Key env vars (on droplet in /opt/nemoclaw-platform/.env)
+| Var | Value |
+|-----|-------|
+| `PLATFORM_DOMAIN` | `nemopod.com` |
+| `GATEWAY_URL` | `https://api.nemopod.com/v1` |
+| `BETTER_AUTH_URL` | `https://api.nemopod.com` |
+| `UI_ORIGIN` | `https://nemopod.com,https://app.nemopod.com` |
+| `PLATFORM_UI_URL` | `https://app.nemopod.com` |
+| `OPENROUTER_API_KEY` | set |
+| `STRIPE_SECRET_KEY` | set (test-mode) |
+| `STRIPE_WEBHOOK_SECRET` | set (test-mode) |
+
+### Gotchas
+- E2E test requires `RUN_E2E=1` — skipped in CI (no SSH access to prod from runner)
+- Tenant subdomain proxy: any `*.nemopod.com` request routes to the matching container
+- Per-tenant gateway keys created automatically at fleet provision time — no manual step
 
 ## 2026-03-17 — WOPR Platform Production Launch
 
