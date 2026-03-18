@@ -1,6 +1,6 @@
 # Production Topology
 
-Three products on shared infrastructure. Same GPUs, same platform-core, same credit system.
+Four products on shared infrastructure. Same GPUs, same platform-core, same credit system.
 
 ## Products
 
@@ -9,6 +9,7 @@ Three products on shared infrastructure. Same GPUs, same platform-core, same cre
 | **WOPR** | wopr.bot | Bot deployers | AI bot platform — always-on bots across messaging channels |
 | **Paperclip** | runpaperclip.com | Non-technical users | Managed bot hosting — one-click bot deployment |
 | **Holy Ship** | holyship.wtf (canonical), holyship.dev (redirect) | Engineering teams | Guaranteed code shipping — issues in, merged PRs out |
+| **NemoClaw** | nemopod.com | ML/AI teams | One-click NVIDIA NemoClaw deployment with metered inference billing |
 
 ## Repositories
 
@@ -30,6 +31,10 @@ Three products on shared infrastructure. Same GPUs, same platform-core, same cre
 | wopr-network/holyship | Flow engine + platform server (holyship-platform) | ghcr.io/wopr-network/holyship |
 | wopr-network/holyship-platform-ui | Holy Ship dashboard (thin shell on platform-ui-core) | ghcr.io/wopr-network/holyship-platform-ui |
 | wopr-network/holyshipper | Ephemeral agent containers — per-discipline worker images | ghcr.io/wopr-network/holyshipper-coder, holyshipper-devops |
+| **NemoClaw** | | |
+| wopr-network/nemoclaw-platform | NemoClaw Hono API — fleet, billing, auth, gateway | ghcr.io/wopr-network/nemoclaw-platform |
+| wopr-network/nemoclaw-platform-ui | NemoClaw dashboard (thin shell on platform-ui-core) | ghcr.io/wopr-network/nemoclaw-platform-ui |
+| wopr-network/nemoclaw | Fork of NVIDIA NemoClaw with WOPR sidecar | ghcr.io/wopr-network/nemoclaw |
 
 ## Shared Infrastructure
 
@@ -250,6 +255,66 @@ Holyshipper containers receive these at provision time (not configured manually)
 | `HOLYSHIP_URL` | holyshipper | Claim/report endpoint |
 | `HOLYSHIP_WORKER_TOKEN` | holyshipper | Per-container auth token |
 
+## NemoClaw Architecture (nemopod.com)
+
+One-click NVIDIA NemoClaw deployment. Each tenant gets their own NemoClaw container with inference routed through the platform gateway for metered per-tenant billing.
+
+```
+Internet
+  └─ Cloudflare DNS
+       ├─ nemopod.com          → 159.89.140.143
+       ├─ api.nemopod.com      → 159.89.140.143
+       ├─ app.nemopod.com      → 159.89.140.143
+       └─ *.nemopod.com        → 159.89.140.143 (tenant subdomains)
+
+Production VPS (DigitalOcean — 159.89.140.143)
+  └─ docker-compose.yml
+       ├─ caddy:2-alpine                (80, 443 — auto-TLS)
+       │    ├─ nemopod.com        → marketing / UI
+       │    ├─ app.nemopod.com    → platform-ui:3000
+       │    ├─ api.nemopod.com    → platform-api:3100
+       │    └─ *.nemopod.com      → platform-api:3100 (tenant proxy)
+       ├─ nemoclaw-platform      (3100 — internal)
+       │    ├─ Docker socket → spawns tenant NemoClaw containers
+       │    ├─ Inference gateway at /v1 (metered OpenRouter proxy)
+       │    ├─ BetterAuth at /api/auth/*
+       │    ├─ tRPC at /trpc/*
+       │    ├─ Stripe webhook at /api/stripe/webhook
+       │    └─ platform-core: auth, billing, credits, gateway, fleet
+       ├─ nemoclaw-platform-ui   (3000 — internal)
+       └─ postgres:16-alpine     (5432 — internal)
+
+Tenant Containers (dynamic, managed by nemoclaw-platform via Dockerode)
+  └─ ghcr.io/wopr-network/nemoclaw:latest
+       ├─ Fork of NVIDIA NemoClaw with WOPR sidecar at /opt/wopr/sidecar.js
+       ├─ Sidecar: GET /internal/health, POST /internal/provision
+       ├─ Provision rewrites openclaw.json to use GATEWAY_URL as provider
+       └─ Per-tenant gateway service key → metered billing through platform
+```
+
+### NemoClaw Key Env Vars
+
+| Var | Purpose |
+|-----|---------|
+| `PLATFORM_DOMAIN` | Tenant subdomain root — `nemopod.com` |
+| `GATEWAY_URL` | `https://api.nemopod.com/v1` — inference gateway for tenant billing |
+| `OPENROUTER_API_KEY` | Upstream LLM provider |
+| `NEMOCLAW_IMAGE` | Default: `ghcr.io/wopr-network/nemoclaw:latest` |
+| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | Stripe test-mode (sandbox) |
+| `PLATFORM_UI_URL` | `https://app.nemopod.com` — post-checkout redirect |
+
+### NemoClaw Billing Flow
+
+```
+User buys credits (Stripe checkout)
+  → checkout.session.completed webhook → /api/stripe/webhook
+  → credits added to tenant's journal_entries (nanodollars)
+  → tenant provisions a NemoClaw container
+  → fleet router creates per-tenant gateway service key
+  → NemoClaw sidecar wires openclaw.json → gateway_url + service_key
+  → every LLM call → gateway → meters tokens → debits credits
+```
+
 ## Shared Dependencies
 
 | Package | Used By | Purpose |
@@ -304,6 +369,9 @@ User action → LLM call → gateway proxy → upstream provider
 | **Holy Ship** | | |
 | holyship-api | 3001 | Via Caddy at api.holyship.wtf |
 | holyship-platform-ui | 3000 | Via Caddy at holyship.wtf |
+| **NemoClaw** | | |
+| nemoclaw-platform | 3100 | Via Caddy at api.nemopod.com |
+| nemoclaw-platform-ui | 3000 | Via Caddy at app.nemopod.com |
 | **Infrastructure** | | |
 | caddy | 80, 443 | Direct |
 | postgres | 5432 | Internal only |
