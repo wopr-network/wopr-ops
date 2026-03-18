@@ -39,16 +39,21 @@ Four products on shared infrastructure. Same GPUs, same platform-core, same cred
 ## Shared Infrastructure
 
 ```
-platform-core (npm package — v1.36.3+)
+platform-core (npm package — v1.42.1+)
     ├── BetterAuth (sessions, signup, login, GitHub OAuth)
     ├── Double-entry credit ledger (journal_entries + journal_lines + account_balances)
     │    ├── Credits are nanodollars, integer math only
     │    ├── $5 signup grant via grantSignupCredits()
+    │    ├── debitCapped() for budget-limited operations
     │    └── Stripe + BTCPay crypto checkout
+    ├── Tenant types: personal, org, platform_service
+    │    └── platform_service bypasses credit gate (company pays, ledger still tracks)
     ├── FleetManager (Docker container lifecycle)
+    │    └── Instance API (restart/stop/start on Instance, not FleetManager)
     ├── Metered inference gateway (OpenRouter proxy at /v1)
     │    ├── Per-tenant service keys (SHA-256 hashed, DB-backed)
     │    ├── Budget check → upstream proxy → metering → credit debit
+    │    ├── X-Attribute-To header for cross-tenant attribution
     │    └── Usage sanitized to standard OpenAI format (strips OpenRouter extras)
     ├── Org/tenant isolation (DrizzleOrgMemberRepository)
     ├── Notification pipeline (Resend email, 29 templates, 30s poll)
@@ -137,7 +142,7 @@ Guaranteed code shipping. One shared engine instance, ephemeral holyshipper cont
 
 **Domain strategy:** holyship.wtf is the canonical domain. holyship.dev 301-redirects to holyship.wtf (Cloudflare redirect rule). API lives at api.holyship.wtf.
 
-**Landing page:** CF Pages project `holyship` serves holyship.wtf + www.holyship.wtf via CNAME → holyship.pages.dev.
+**Landing page:** Served by holyship-platform-ui on the VPS (was CF Pages, migrated 2026-03-17).
 
 **GitHub App:** "Holy Ship" (App ID 3099979), installed on wopr-network org. Webhook URL: `https://api.holyship.wtf/api/github/webhook`. Installation tokens (1hr TTL) used for git ops in holyshipper containers.
 
@@ -145,30 +150,38 @@ Guaranteed code shipping. One shared engine instance, ephemeral holyshipper cont
 
 ```
 Internet
-  └─ Cloudflare
-       ├─ holyship.wtf            → CF Pages (landing page) / VPS IP (dashboard)
-       ├─ www.holyship.wtf        → CNAME holyship.wtf
-       ├─ holyship.dev            → 301 redirect to holyship.wtf (CF redirect rule)
-       └─ api.holyship.wtf        → VPS IP (platform API + webhook)
+  └─ Cloudflare (proxy OFF — Caddy handles TLS via DNS-01)
+       ├─ holyship.wtf            → A 138.68.46.192 (VPS)
+       ├─ www.holyship.wtf        → A 138.68.46.192 (VPS)
+       ├─ api.holyship.wtf        → A 138.68.46.192 (VPS)
+       └─ holyship.dev            → 301 redirect to holyship.wtf (CF redirect rule)
 
-Production VPS (DO sfo2, s-1vcpu-1gb, 5GB swap)
-  └─ docker-compose.yml
-       ├─ caddy:2-alpine                        (80, 443 — auto-TLS)
-       │    ├─ holyship.wtf              → holyship-ui:3000
-       │    └─ api.holyship.wtf          → holyship-api:3001
-       ├─ holyship-api                   (3001 — internal)
+Production VPS (DO sfo2, s-1vcpu-1gb, 5GB swap, IP 138.68.46.192)
+  └─ docker-compose.yml (/opt/holyship/)
+       ├─ caddy (custom build: caddy-dns/cloudflare plugin)  (80, 443 — DNS-01 TLS via CF)
+       │    ├─ holyship.wtf, www.holyship.wtf → holyship-ui:3000
+       │    └─ api.holyship.wtf               → holyship-api:3001
+       ├─ holyship-api (platform-core v1.42.1)        (3001 — internal)
        │    ├─ Flow engine (state machine, gates, claim/report)
        │    ├─ GitHub App webhook at /api/github/webhook
        │    ├─ Ship It endpoint at /api/ship-it
        │    ├─ Baked-in engineering flow (auto-provisioned on boot)
        │    ├─ Inference gateway at /v1 (metered OpenRouter proxy)
+       │    ├─ Interrogation routes at /api/repos/:owner/:repo/interrogate, /config, /gaps
+       │    ├─ Flow editor routes at /api/repos/:owner/:repo/flow, /flow/edit, /flow/apply, /design-flow
+       │    ├─ Gap → GitHub issue creation at /api/repos/:owner/:repo/gaps/:id/create-issue
        │    ├─ BetterAuth at /api/auth/* (sessions, GitHub OAuth)
        │    ├─ tRPC at /trpc/* (billing, org, settings)
-       │    ├─ Crypto webhook at /api/webhooks/crypto (BTCPay)
        │    ├─ Double-entry credit ledger (nanodollars, journal_entries + journal_lines)
        │    └─ platform-core: auth, billing, credits, gateway, orgs, notifications
-       ├─ holyship-platform-ui           (3000 — internal)
+       ├─ holyship-platform-ui (platform-ui-core v1.14.1) (3000 — internal)
+       │    ├─ Landing page, dashboard, repo analyze/pipeline/stories pages
+       │    ├─ Visual flow editor (conversational — talk to your pipeline)
+       │    ├─ /api/github/repos (Next.js API route for dashboard repo listing)
+       │    └─ Config grid, gap checklist, flow diagram with diff highlighting
        └─ postgres:16-alpine             (5432 — internal)
+
+  Auto-deploy: auto-pull.sh cron (every 60s) detects new GHCR digests, restarts services
 
 Holyshipper Containers (ephemeral, per-issue, managed by holyship-api via fleet)
   └─ ghcr.io/wopr-network/holyshipper-coder:latest (or holyshipper-devops)
@@ -197,17 +210,19 @@ Issue arrives (GitHub webhook or "Ship It" button)
      └─ terminal state → holyshipper tears down, entity done
 ```
 
-### Baked-In Engineering Flow (11 states, 3 gates, 13 transitions)
+### Baked-In Engineering Flow (10 states, 3 gates, 12 transitions)
 
 ```
-spec ──spec_ready──→ code ──pr_created──→ review ──clean──→ docs ──docs_ready──→ learning ──learned──→ merge ──merged──→ done
-                                            │                 │                                         │
-                                            ├─issues──→ fix ←─┤cant_document──→ stuck                   ├─blocked──→ fix
-                                            ├─ci_failed──→ fix │                                        └─closed──→ stuck
+spec ──spec_ready──→ code ──pr_created──→ review ──clean──→ docs ──docs_ready──→ merge ──merged──→ done
+                                            │                 │                    │
+                                            ├─issues──→ fix ←─┤cant_document──→ stuck ├─blocked──→ fix
+                                            ├─ci_failed──→ fix │                    └─closed──→ stuck
                                             │            │
                                             │            └─fixes_pushed──→ review (loop)
                                             │            └─cant_resolve──→ stuck
 ```
+
+Learning is implicit — every agent gets a "what did you learn?" prompt after signaling done, before container teardown. Same session, full context. Updates .holyship/knowledge.md + ship.log as last commit in the PR.
 
 **Gates (opinionated, baked-in):**
 | Gate | Transition | Check |
@@ -228,6 +243,14 @@ Gates use GitHub App installation tokens via `primitive-ops.ts`. No shell script
 | **Holyshipper** | Ephemeral Docker container that runs a Claude agent for one issue |
 | **Installation token** | 1-hour GitHub App token, generated per-holyshipper at provision time |
 | **Service key** | Gateway API key tied to tenant, metered for billing |
+| **.holyship/flow.yaml** | Customer's pipeline definition — lives in their repo, no lock-in |
+| **.holyship/knowledge.md** | Repo intelligence — conventions, CI gate, gotchas. Updated by agents after every flow run |
+| **.holyship/ship.log** | Append-only agent history — what was tried, what worked, what failed |
+| **Interrogation** | AI scans repo to discover capabilities, conventions, gaps. Produces RepoConfig + gaps + bootstrapped knowledge.md |
+| **Gap** | Missing capability found during interrogation (e.g., no tests, no CI). Each gap becomes a GitHub issue |
+| **Flow editor** | Conversational UI — user talks to their pipeline, AI modifies flow.yaml, apply creates a PR |
+| **Platform service account** | Tenant type `platform_service` — company-funded, bypasses credit gate, tracks spend via attribution |
+| **Model tiers** | opus (reasoning), sonnet (coding), haiku (merge/docs), test (Qwen3-Coder, free) |
 
 ### Holy Ship Env Vars
 
