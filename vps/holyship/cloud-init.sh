@@ -216,7 +216,7 @@ services:
     environment:
       - BITCOIN_NETWORK=${BITCOIN_NETWORK:-regtest}
       - BITCOIN_WALLETDIR=/data/wallets
-      - BITCOIN_EXTRA_ARGS=server=1\nrpcuser=btcpay\nrpcpassword=${BTCPAY_BITCOIND_PASSWORD:-btcpay-local}\nrpcallowip=0.0.0.0/0\nrpcbind=0.0.0.0\nfallbackfee=0.0002
+      - BITCOIN_EXTRA_ARGS=server=1\nrpcuser=btcpay\nrpcpassword=${BTCPAY_BITCOIND_PASSWORD:-btcpay-local}\nrpcallowip=0.0.0.0/0\nrpcbind=0.0.0.0\nfallbackfee=0.0002\nprune=550
     volumes:
       - bitcoin_data:/data
     restart: unless-stopped

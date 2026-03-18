@@ -157,6 +157,7 @@ services:
         rpcallowip=0.0.0.0/0
         rpcbind=0.0.0.0
         fallbackfee=0.0002
+        prune=550
     volumes:
       - bitcoin_data:/data
     networks:
