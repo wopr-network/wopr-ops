@@ -167,6 +167,10 @@ services:
       - DO_API_TOKEN=${DO_API_TOKEN}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS:-172.16.0.0/12}
+      - FLEET_API_TOKEN=${FLEET_API_TOKEN:-wopr_fleet_default}
+      - REGISTRY_USERNAME=wopr-network
+      - REGISTRY_PASSWORD=${GHCR_TOKEN}
+      - REGISTRY_SERVER=ghcr.io
       - NODE_ENV=production
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
