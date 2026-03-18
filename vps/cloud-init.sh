@@ -160,6 +160,7 @@ services:
       - BETTER_AUTH_URL=https://api.wopr.bot
       - UI_ORIGIN=https://wopr.bot,https://app.wopr.bot
       - PLATFORM_DOMAIN=wopr.bot
+      - COOKIE_DOMAIN=.wopr.bot
       - PLATFORM_SECRET=${PLATFORM_SECRET}
       - PLATFORM_ENCRYPTION_SECRET=${PLATFORM_ENCRYPTION_SECRET}
       - WOPR_BOT_IMAGE=ghcr.io/wopr-network/wopr:latest
