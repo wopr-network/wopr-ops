@@ -1435,7 +1435,7 @@ billing.checkout({ methodId: "usdc:base", amountUsd: 50 })
 4. Derives HD deposit address from xpub (per-charge, indexed by charge row ID)
    - **Each deployment uses its own account-level xpub** — see TOPOLOGY.md § Crypto Payment Wallet Hierarchy
    - nemoclaw: `m/44'/60'/0'`, holyship: `m/44'/60'/1'`, paperclip: `m/44'/60'/2'`, wopr: `m/44'/60'/3'`
-   - Encrypted master seed: `G:\My Drive\paperclip-wallet.enc` (password in 1Password)
+   - Encrypted master seed: `G:\My Drive\paperclip-wallet.enc` (decrypt: `openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d -pass pass:<passphrase> -in paperclip-wallet.enc`)
 5. Stores charge in `crypto_charges` table: `amount_usd_cents` (integer, **NOT nanodollars**)
 6. Returns deposit address + expected amount to UI (no redirect — address shown inline)
 7. Watcher detects incoming transfer (see Watcher Architecture below)
