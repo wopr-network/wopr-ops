@@ -86,3 +86,14 @@ Report the bug upstream at https://github.com/btcpayserver/dockerfile-deps. The 
 
 **Who this affects:**
 Anyone using `btcpayserver/bitcoin:30.2` with `BITCOIN_NETWORK=mainnet`. Paperclip is unaffected (regtest). The WOPR VPS doesn't run BTCPay.
+
+**Simpler fix found (nemoclaw-platform, 2026-03-18):**
+The custom entrypoint works but there's a one-liner: set `CREATE_WALLET=false` in the bitcoind service environment. The entrypoint checks this flag before running `bitcoin-wallet` and skips wallet creation entirely. BTCPay doesn't need a wallet for payment processing — it only needs the RPC interface. No custom entrypoint, no bind-mount, no pre-boot dance.
+
+```yaml
+bitcoind:
+  environment:
+    CREATE_WALLET: "false"
+```
+
+Bitcoind starts clean, syncs mainnet, nbxplorer connects, BTCPay works. If you want to simplify the holyship stack you can drop the custom entrypoint and use this instead.
