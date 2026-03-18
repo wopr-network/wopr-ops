@@ -25,9 +25,9 @@ CF_TOKEN="${CLOUDFLARE_API_TOKEN:?Set CLOUDFLARE_API_TOKEN}"
 CF_ZONE="7f8313ed0ec8e1df1072ba5b49f86880"
 DROPLET_NAME="holyship"
 REGION="sfo2"
-SIZE="s-1vcpu-2gb"
+SIZE="s-1vcpu-1gb"
 IMAGE="ubuntu-24-04-x64"
-SSH_KEY_IDS="54956840,54353584"
+SSH_KEY_IDS="54912818,52980537"
 DOMAINS=("holyship.wtf" "api.holyship.wtf" "www.holyship.wtf")
 
 do_api() {
