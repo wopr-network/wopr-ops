@@ -49,3 +49,22 @@ Diagnosis tip: `Content-Length: 0` + HTTP 200 = Caddy no-match. A real upstream 
 ## 2026-02-28 — GPU node separate from bot fleet
 
 GPU nodes are shared infrastructure with no per-tenant capacity. They have different health semantics (inference endpoints vs WebSocket self-registration). Sharing the node state machine would conflate unrelated concerns (see GPU Inference Infrastructure design doc in Linear).
+
+---
+
+### 2026-03-18 — BTCPay bitcoind mainnet wallet creation bug (btcpayserver/bitcoin:30.2)
+
+**Problem:** The `btcpayserver/bitcoin:30.2` Docker image entrypoint passes `-${BITCOIN_NETWORK}` to `bitcoin-wallet` during first-boot wallet creation (line 40 of `/entrypoint.sh`). When `BITCOIN_NETWORK=mainnet`, this becomes `bitcoin-wallet -mainnet` which is an invalid flag — `bitcoin-wallet` doesn't accept `-mainnet` (mainnet is the default, no flag needed). The container crash-loops with `Error parsing command line arguments: Invalid parameter -mainnet`.
+
+Regtest and testnet work fine because `-regtest` and `-testnet` are valid flags.
+
+**Workaround:** Custom entrypoint (`/opt/holyship/bitcoind-entrypoint.sh`) that:
+1. Pre-creates the wallet directory `${BITCOIN_WALLETDIR}/${BITCOIN_NETWORK}`
+2. Starts bitcoind in temp mode (`-connect=0 -listen=0`) to create the wallet via `bitcoin-cli createwallet`
+3. Stops temp bitcoind, then execs the stock `/entrypoint.sh` which sees the wallet exists and skips the broken `bitcoin-wallet` call
+
+**Compose mount:** `./bitcoind-entrypoint.sh:/custom-entrypoint.sh:ro` with `entrypoint: ["/custom-entrypoint.sh", "bitcoind"]`
+
+**Upstream fix:** Should be reported to https://github.com/btcpayserver/dockerfile-deps — the entrypoint needs to skip the `-${BITCOIN_NETWORK}` flag when `BITCOIN_NETWORK=mainnet`.
+
+**Affected deployments:** holyship VPS (138.68.46.192). Paperclip is unaffected (uses regtest).
