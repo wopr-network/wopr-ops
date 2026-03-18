@@ -27,7 +27,7 @@ DROPLET_NAME="wopr-platform"
 REGION="sfo2"
 SIZE="s-1vcpu-1gb"
 IMAGE="ubuntu-24-04-x64"
-SSH_KEY_IDS="54956840,54353584"
+SSH_KEY_IDS="54912818"
 DOMAINS=("wopr.bot" "api.wopr.bot" "app.wopr.bot")
 
 do_api() {
