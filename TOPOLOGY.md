@@ -444,3 +444,28 @@ sudo apt install chrony
 sudo systemctl disable systemd-timesyncd
 sudo systemctl enable --now chronyd
 ```
+
+## Crypto Payment Wallet Hierarchy
+
+All platforms share one BIP39 master seed (`paperclip-wallet.enc` on G drive, encrypted with `openssl enc -aes-256-cbc -pbkdf2 -iter 100000`). Each deployment gets its own BIP44 account-level xpub — completely isolated address spaces, no cross-platform address collisions possible.
+
+| Deployment | Account Path | xpub | Status |
+|-----------|-------------|------|--------|
+| nemoclaw | `m/44'/60'/0'` | `xpub6DSVkV7mgEZrnBEmZEq412Cx9sYYZtFvGSb6W9bRDDSikYdpmUiJoNeuechuir63ZjdHQuWBLwchQQnh2GD6DJP6bPKUa1bey1X6XvH9jvM` | deployed |
+| holyship | `m/44'/60'/1'` | `xpub6DSVkV7mgEZrq3tu6TD8NJBvQPceKzuZdtkSS7gfUJBRb37HzHKKxtVPVkY8FquGXnKbCNH27KTGagMRYu4Tg5y5UXLYVfXGuD3kFHBbyMp` | deployed |
+| paperclip | `m/44'/60'/2'` | `xpub6DSVkV7mgEZrs93tLMxNf5Yq8mbtqNcMjQ8zeHXcNxcERZDb17U4Ky5WUme1GFGLuRHWYe6NNBHVjLdYC5HjVzZMjuF7K7RCz4voAKf8QhY` | reserved |
+| wopr | `m/44'/60'/3'` | (derive when needed) | not configured |
+
+**To derive a new xpub:**
+```bash
+openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d -pass pass:<passphrase> \
+  -in "/mnt/g/My Drive/paperclip-wallet.enc" | npx tsx --eval "
+import { HDKey } from '@scure/bip32';
+import { mnemonicToSeedSync } from '@scure/bip39';
+const mnemonic = require('fs').readFileSync('/dev/stdin','utf8').trim();
+const root = HDKey.fromMasterSeed(mnemonicToSeedSync(mnemonic));
+console.log(root.derive(\"m/44'/60'/N'\").publicExtendedKey);
+"
+```
+
+**Why account-level xpubs:** Each deployment holds only its branch. A server compromise exposes only that platform's address space. Addresses are mathematically disjoint — no code or config error can produce collisions.

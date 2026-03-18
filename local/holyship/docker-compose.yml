@@ -64,6 +64,10 @@ services:
       BETTER_AUTH_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
       UI_ORIGIN: ${UI_ORIGIN:-https://holyship.wtf}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      FROM_EMAIL: ${FROM_EMAIL:-noreply@holyship.wtf}
       FLEET_DATA_DIR: /tmp/fleet
       # Worker pool — ephemeral holyshipper containers
       HOLYSHIP_WORKER_IMAGE: ${HOLYSHIP_WORKER_IMAGE:-ghcr.io/wopr-network/wopr-holyshipper-coder:latest}
