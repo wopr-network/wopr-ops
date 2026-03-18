@@ -164,6 +164,7 @@ services:
       - WOPR_BOT_IMAGE=ghcr.io/wopr-network/wopr:latest
       - DO_API_TOKEN=${DO_API_TOKEN}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS:-172.16.0.0/12}
       - NODE_ENV=production
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
