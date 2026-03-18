@@ -52,19 +52,37 @@ GPU nodes are shared infrastructure with no per-tenant capacity. They have diffe
 
 ---
 
-### 2026-03-18 — BTCPay bitcoind mainnet wallet creation bug (btcpayserver/bitcoin:30.2)
+### 2026-03-18 — BTCPay bitcoind won't start on mainnet
 
-**Problem:** The `btcpayserver/bitcoin:30.2` Docker image entrypoint passes `-${BITCOIN_NETWORK}` to `bitcoin-wallet` during first-boot wallet creation (line 40 of `/entrypoint.sh`). When `BITCOIN_NETWORK=mainnet`, this becomes `bitcoin-wallet -mainnet` which is an invalid flag — `bitcoin-wallet` doesn't accept `-mainnet` (mainnet is the default, no flag needed). The container crash-loops with `Error parsing command line arguments: Invalid parameter -mainnet`.
+**What we were trying to do:**
+We added Bitcoin payments to Holy Ship (holyship.wtf) by copying the BTCPay stack from paperclip-platform. Paperclip runs on regtest (fake local chain for testing). Holy Ship needs mainnet (real Bitcoin). We changed `BITCOIN_NETWORK=regtest` to `mainnet` and the bitcoind container started crash-looping.
 
-Regtest and testnet work fine because `-regtest` and `-testnet` are valid flags.
+**What went wrong:**
+The BTCPay project's Docker image (`btcpayserver/bitcoin:30.2`) has a bug in its entrypoint script. On first boot, it creates a wallet by running:
 
-**Workaround:** Custom entrypoint (`/opt/holyship/bitcoind-entrypoint.sh`) that:
-1. Pre-creates the wallet directory `${BITCOIN_WALLETDIR}/${BITCOIN_NETWORK}`
-2. Starts bitcoind in temp mode (`-connect=0 -listen=0`) to create the wallet via `bitcoin-cli createwallet`
-3. Stops temp bitcoind, then execs the stock `/entrypoint.sh` which sees the wallet exists and skips the broken `bitcoin-wallet` call
+```
+bitcoin-wallet -${BITCOIN_NETWORK} -datadir=... -wallet= create
+```
 
-**Compose mount:** `./bitcoind-entrypoint.sh:/custom-entrypoint.sh:ro` with `entrypoint: ["/custom-entrypoint.sh", "bitcoind"]`
+For regtest this becomes `bitcoin-wallet -regtest` which is valid. For testnet, `-testnet` is valid. But for mainnet it becomes `bitcoin-wallet -mainnet` — and `-mainnet` is not a real flag. Bitcoin Core doesn't need a network flag for mainnet because mainnet is the default. The container dies with `Error parsing command line arguments: Invalid parameter -mainnet` before bitcoind ever starts.
 
-**Upstream fix:** Should be reported to https://github.com/btcpayserver/dockerfile-deps — the entrypoint needs to skip the `-${BITCOIN_NETWORK}` flag when `BITCOIN_NETWORK=mainnet`.
+We tried: removing the env var entirely (entrypoint defaults to `mainnet` internally), setting it empty (entrypoint still fills in `mainnet`), wiping the volume. Nothing helps because the bug is baked into the image's entrypoint at line 40 of `/entrypoint.sh`.
 
-**Affected deployments:** holyship VPS (138.68.46.192). Paperclip is unaffected (uses regtest).
+**What we did about it:**
+We wrote a custom entrypoint (`/opt/holyship/bitcoind-entrypoint.sh`) that runs BEFORE the stock entrypoint. It starts a temporary bitcoind, creates the wallet using `bitcoin-cli createwallet` (which works fine on mainnet), shuts it down, then hands off to the stock entrypoint. The stock entrypoint sees the wallet already exists and skips the broken `bitcoin-wallet` call.
+
+The custom entrypoint is bind-mounted into the container:
+```yaml
+entrypoint: ["/custom-entrypoint.sh", "bitcoind"]
+volumes:
+  - ./bitcoind-entrypoint.sh:/custom-entrypoint.sh:ro
+```
+
+**Current state:**
+Bitcoind is syncing mainnet (pruned to 550MB). Headers downloading, peers connected, working correctly. BTCPay and nbxplorer are running and will be ready once sync completes.
+
+**What should happen next:**
+Report the bug upstream at https://github.com/btcpayserver/dockerfile-deps. The fix is trivial — skip the `-${BITCOIN_NETWORK}` flag when the value is `mainnet`. Once they fix it, we can drop our custom entrypoint.
+
+**Who this affects:**
+Anyone using `btcpayserver/bitcoin:30.2` with `BITCOIN_NETWORK=mainnet`. Paperclip is unaffected (regtest). The WOPR VPS doesn't run BTCPay.
