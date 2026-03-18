@@ -15,7 +15,55 @@
 
 ---
 
-*(no production entries yet — system not yet deployed to VPS)*
+### 2026-03-17 23:30 UTC — Holy Ship production launch (DigitalOcean SFO2)
+
+**Repos:** wopr-network/holyship, wopr-network/holyship-platform-ui, wopr-network/platform-core, wopr-network/holyshipper, wopr-network/wopr-ops
+**VPS:** DigitalOcean s-1vcpu-1gb ($6/mo), IP 138.68.46.192, sfo2
+**Images deployed:**
+- `ghcr.io/wopr-network/holyship:latest` (platform-core v1.42.1)
+- `ghcr.io/wopr-network/holyship-platform-ui:latest` (platform-ui-core v1.14.1)
+- `postgres:16-alpine`
+- `caddy:2-alpine` (custom build with caddy-dns/cloudflare for DNS-01 TLS)
+
+**DNS:** holyship.wtf, api.holyship.wtf, www.holyship.wtf → 138.68.46.192 (Cloudflare proxy OFF, Caddy handles TLS)
+**TLS:** Let's Encrypt via Caddy DNS-01 challenge (Cloudflare API token), valid until 2026-06-15
+
+**Result:** Success — all 4 containers healthy, full stack verified
+
+**Verified endpoints:**
+- `https://holyship.wtf` → 200 (landing page, "Holy Ship — Guaranteed Code Shipping")
+- `https://holyship.wtf/dashboard` → 200 (auth redirect works)
+- `https://api.holyship.wtf/health` → `{"status":"ok"}`
+- Gateway LLM call → 200 (Claude Haiku via OpenRouter, credits debited correctly)
+- Billing ledger → double-entry balanced (adapter_usage debits verified)
+
+**What shipped this session (17 issues, 15+ PRs):**
+- .holyship/ directory convention (flow.yaml, knowledge.md, ship.log)
+- Implicit learning (agents learn after every flow run)
+- Repo interrogation (prompt + parser + service)
+- Visual flow editor (conversational — frontend + backend)
+- Flow API (GET/POST /flow, /flow/edit, /flow/apply, /design-flow)
+- Platform billing (platform_service tenant, X-Attribute-To attribution, credit bypass)
+- Direct gateway LLM calls (no runner overhead for flow editing)
+- Gap → GitHub issue creation wiring
+- Dashboard repo listing (/api/github/repos)
+- VPS provisioning scripts (vps/holyship/)
+- Qwen3-Coder as test tier model in holyshipper
+
+**Issues found and fixed during deploy:**
+1. GHCR token expired — used `gh auth token` instead
+2. Caddy TLS challenge failed — DNS was pointing to Cloudflare Pages, not VPS. Fixed A records, proxy OFF.
+3. `/tmp/fleet` owned by root → meter WAL EACCES → silent billing failure. Fixed in Dockerfile (PR #242).
+4. Tenant ID mismatch — engine uses `"default"`, manual seed used `"tenant-default"`. Fixed in DB.
+5. No credits seeded — used `grantSignupCredits()` inside container to properly create ledger accounts.
+
+**Rollback needed:** No
+
+**Notes:**
+- Auto-pull cron (`auto-pull.sh`) runs every minute on the VPS, detects new GHCR images, restarts services.
+- Gateway service key: `sk-hs-97eeb...` (in /opt/holyship/.env on VPS, NOT in git).
+- Engineering flow auto-provisions on boot (flow_definitions table, initial_state: spec).
+- First repo onboarded: wopr-network/holyship (meta — Holy Ship shipped itself).
 
 ---
 
