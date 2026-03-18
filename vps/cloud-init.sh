@@ -74,6 +74,7 @@ CADDYEOF
 # --- Caddyfile ---
 cat > /opt/wopr-platform/Caddyfile << 'CADDYFILEEOF'
 {
+	email admin@wopr.bot
 	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 }
 
