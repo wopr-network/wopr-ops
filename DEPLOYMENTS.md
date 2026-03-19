@@ -145,3 +145,35 @@
 2. Build `paperclip-managed:local` image
 3. Run `bash scripts/local-test.sh` end-to-end
 4. Wire Stripe webhook + checkout flow routes
+
+---
+
+### 2026-03-19 21:30 UTC — Shared chain server deployed (DigitalOcean SFO2)
+
+**Repos:** wopr-network/wopr-ops
+**VPS:** DigitalOcean s-2vcpu-4gb ($24/mo), IP 167.71.118.221, Private IP 10.120.0.5, sfo2
+**Images deployed:**
+- `btcpayserver/bitcoin:30.2` (mainnet, pruned 550MB, custom wrapper entrypoint)
+- `nicolasdorier/nbxplorer:2.6.1`
+- `btcpayserver/btcpayserver:2.3.5`
+- `postgres:16-alpine` (databases: chain, nbxplorer, btcpayserver)
+
+**DNS:** pay.wopr.bot → 167.71.118.221 (Cloudflare, proxy OFF)
+
+**Result:** Success — UTXO snapshot (block 910,000, 9GB torrent) loaded via assumeutxo. Tip chain at 92%+, syncing to current. Background IBD validating old history.
+
+**Architecture:** Shared chain node serving all 4 products via DO private networking (10.120.0.5:23002). Products point BTCPAY_BASE_URL at private IP.
+
+**Issues encountered:**
+1. BTCPay UTXO snapshot server (utxo-sets.btcpayserver.org) unreachable — used community torrent instead
+2. BITCOIN_EXTRA_ARGS `\n` not expanding in compose env — BTCPay entrypoint writes literal `\n` to bitcoin.conf. Fixed with custom wrapper entrypoint that writes proper config and execs bitcoind directly.
+3. BTCPay `bitcoin-wallet -mainnet` bug (same as holyship VPS) — wrapper bypasses entrypoint entirely.
+
+**Next steps:**
+1. Wait for tip chain to fully sync (~31K blocks remaining)
+2. BTCPay admin setup at http://167.71.118.221:23002
+3. Create stores for holyship, wopr, paperclip, nemoclaw
+4. Update each product .env: BTCPAY_BASE_URL=http://10.120.0.5:23002
+5. Resize droplet to s-1vcpu-2gb ($12/mo) after full sync
+
+**Rollback needed:** No
