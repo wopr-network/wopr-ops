@@ -237,6 +237,109 @@ DO Cloud Firewall (already configured):
 - Port 8332: product VPSes + admin IP only (bitcoind)
 - Port 5432: localhost only
 
+## Admin API — Path Registry & Chain Management
+
+Adding a new chain/token is a two-step human+server workflow. The server owns the path registry (knows what's allocated). The human owns the seed (derives the xpub locally).
+
+### `GET /admin/next-path?coin_type=501`
+
+Ask the server which derivation path to use for a new coin type.
+
+```
+GET /admin/next-path?coin_type=501
+Authorization: Bearer {admin_token}
+
+→ 200 OK
+{
+  "coin_type": 501,
+  "account_index": 0,
+  "path": "m/44'/501'/0'",
+  "status": "available"
+}
+```
+
+If coin type 60 (EVM) is already used at index 0:
+```
+GET /admin/next-path?coin_type=60
+
+→ 200 OK
+{
+  "coin_type": 60,
+  "account_index": 0,
+  "path": "m/44'/60'/0'",
+  "status": "allocated",
+  "allocated_to": ["base-usdc", "base-usdt", "arb-usdc", "base-eth"],
+  "note": "xpub already registered — reuse for new EVM chains"
+}
+```
+
+### `POST /admin/chains`
+
+Register a new chain with its xpub (derived locally from seed).
+
+```
+POST /admin/chains
+Authorization: Bearer {admin_token}
+Content-Type: application/json
+
+{
+  "id": "sol",
+  "coin_type": 501,
+  "account_index": 0,
+  "network": "mainnet",
+  "token": "SOL",
+  "contract": null,
+  "decimals": 9,
+  "xpub": "xpub6...",
+  "rpc_url": "https://api.mainnet-beta.solana.com",
+  "confirmations": 32
+}
+
+→ 201 Created
+```
+
+The service records the path allocation so it's never reused.
+
+### Path Allocation Table
+
+```sql
+CREATE TABLE path_allocations (
+  coin_type INTEGER NOT NULL,       -- BIP44 coin type (0=BTC, 60=ETH, 3=DOGE, 501=SOL)
+  account_index INTEGER NOT NULL,   -- m/44'/{coin_type}'/{index}'
+  chain_id TEXT REFERENCES chains(id),
+  xpub TEXT NOT NULL,               -- the registered xpub for this path
+  allocated_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (coin_type, account_index)
+);
+```
+
+### Adding a New Chain — Full Workflow
+
+```
+1. Admin: GET /admin/next-path?coin_type=501
+   → "m/44'/501'/0'" available
+
+2. Admin (locally, with seed phrase):
+   openssl enc -d ... | derive m/44'/501'/0' → xpub6...sol
+
+3. Admin: POST /admin/chains
+   { id: "sol", coin_type: 501, xpub: "xpub6...sol", ... }
+
+4. Done. All products accept SOL. GET /chains returns it.
+   Checkout UI renders it. Watcher picks up payments.
+```
+
+**Security boundary:** The seed phrase never touches the server. The server only ever sees xpubs (public keys). It tracks which paths are allocated so you never collide, but it can't derive anything itself.
+
+### `DELETE /admin/chains/:id`
+
+Disable a chain (soft delete — sets `enabled = false`). Existing charges remain valid.
+
+```
+DELETE /admin/chains/doge
+→ 204 No Content
+```
+
 ## What Comes From platform-core
 
 Almost everything:
@@ -249,15 +352,24 @@ Almost everything:
 - `billing/crypto/charge-store.ts` — Drizzle charge persistence
 - `gateway/service-key-auth.ts` — tenant resolution from service key
 
-New code: ~100 lines (Hono routes for /address and /charges, chain config seed).
+New code: ~200 lines (Hono routes for /address, /charges, /chains, /admin/*, path allocation logic).
+
+## Platform-core Integration Point
+
+The change to each product's codebase is small. In `billing/crypto/unified-checkout.ts`:
+
+**Before:** derives address locally, starts local watcher
+**After:** `POST {CRYPTO_SERVICE_URL}/charges` → get address back, return to user
+
+The webhook callback path is unchanged — product receives `POST /api/webhooks/crypto` and credits the ledger exactly as before. The only difference is who sends the webhook (crypto service instead of local watcher).
 
 ## Migration Path
 
-1. Derive BTC xpub from master seed: `m/44'/0'/0'`
-2. Add `chains` and `derived_addresses` tables to platform-core schema
-3. Deploy platform-core on chain-server with crypto config
-4. Seed chains table (btc + evm xpubs, RPC URLs)
+1. Add `chains`, `path_allocations`, `derived_addresses` tables to platform-core schema
+2. Deploy platform-core on chain-server with crypto config
+3. Derive BTC xpub locally: `m/44'/0'/0'` → POST /admin/chains
+4. EVM xpub already derived: `m/44'/60'/0'` → POST /admin/chains for each ERC20
 5. Register product service keys
-6. Update products: remove all crypto env vars, add `CRYPTO_SERVICE_URL`
-7. Product checkout mutation calls crypto service instead of local watchers
+6. Update `unified-checkout.ts` to call crypto service instead of local derivation
+7. Update products: remove all crypto env vars, add `CRYPTO_SERVICE_URL`
 8. Remove watcher boot code from product VPSes
