@@ -90,7 +90,7 @@ services:
       - BITCOIN_NETWORK=${BITCOIN_NETWORK:-mainnet}
       - BITCOIN_WALLETDIR=/data/wallets
       - CREATE_WALLET=false
-      - BITCOIN_EXTRA_ARGS=server=1\nrpcuser=btcpay\nrpcpassword=${BTCPAY_BITCOIND_PASSWORD}\nrpcallowip=0.0.0.0/0\nrpcbind=0.0.0.0\nfallbackfee=0.0002\nprune=550
+      - BITCOIN_EXTRA_ARGS=server=1\nrpcuser=btcpay\nrpcpassword=${BTCPAY_BITCOIND_PASSWORD}\nrpcallowip=0.0.0.0/0\nrpcbind=0.0.0.0\nfallbackfee=0.0002\nprune=5000
     volumes:
       - bitcoin_data:/data
     restart: unless-stopped
