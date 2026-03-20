@@ -86,8 +86,39 @@ services:
       - ./bitcoind-wrapper.sh:/opt/wrapper.sh:ro
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: chain-postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: ${PLATFORM_DB_PASSWORD}
+      POSTGRES_DB: crypto_key_server
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  crypto:
+    image: ${CRYPTO_IMAGE:-ghcr.io/wopr-network/crypto-key-server:latest}
+    container_name: chain-crypto
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://platform:${PLATFORM_DB_PASSWORD}@postgres:5432/crypto_key_server
+      PORT: "3100"
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+
 volumes:
   bitcoin_data:
+  postgres_data:
 
 networks:
   default:
