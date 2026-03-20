@@ -48,37 +48,45 @@ chown deploy:deploy /home/deploy/.ssh/id_ed25519 /home/deploy/.ssh/id_ed25519.pu
 mkdir -p /opt/chain-server
 chown -R deploy:deploy /opt/chain-server
 
+# --- bitcoind wrapper (bypasses broken BTCPay entrypoint for mainnet) ---
+cat > /opt/chain-server/bitcoind-wrapper.sh << 'WRAPEOF'
+#!/bin/bash
+set -e
+mkdir -p /data/wallets/mainnet
+cat > /data/bitcoin.conf << CONFEOF
+[main]
+server=1
+rpcuser=btcpay
+rpcpassword=${BTCPAY_BITCOIND_PASSWORD:-changeme}
+rpcallowip=0.0.0.0/0
+rpcallowip=::/0
+rpcbind=0.0.0.0
+fallbackfee=0.0002
+prune=5000
+walletdir=/data/wallets/mainnet
+printtoconsole=1
+CONFEOF
+chown bitcoin:bitcoin /data/bitcoin.conf /data/wallets/mainnet
+exec gosu bitcoin bitcoind -datadir=/data
+WRAPEOF
+chmod +x /opt/chain-server/bitcoind-wrapper.sh
+
 # --- docker-compose.yml ---
 cat > /opt/chain-server/docker-compose.yml << 'COMPOSEEOF'
 services:
-  postgres:
-    image: postgres:16-alpine
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_USER=chain
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=chain
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U chain"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   bitcoind:
     image: btcpayserver/bitcoin:30.2
+    entrypoint: ["/opt/wrapper.sh"]
+    ports:
+      - "8332:8332"
     environment:
-      - BITCOIN_NETWORK=${BITCOIN_NETWORK:-mainnet}
-      - BITCOIN_WALLETDIR=/data/wallets
-      - CREATE_WALLET=false
-      - BITCOIN_EXTRA_ARGS=server=1\nrpcuser=btcpay\nrpcpassword=${BTCPAY_BITCOIND_PASSWORD}\nrpcallowip=0.0.0.0/0\nrpcbind=0.0.0.0\nfallbackfee=0.0002\nprune=5000
+      - BTCPAY_BITCOIND_PASSWORD=${BTCPAY_BITCOIND_PASSWORD}
     volumes:
       - bitcoin_data:/data
+      - ./bitcoind-wrapper.sh:/opt/wrapper.sh:ro
     restart: unless-stopped
 
 volumes:
-  postgres_data:
   bitcoin_data:
 
 networks:
