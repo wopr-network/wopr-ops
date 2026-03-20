@@ -2141,3 +2141,10 @@ docker exec holyship-caddy wget -qO- http://api:3001/health
 ```bash
 docker restart holyship-caddy   # (or the appropriate project prefix)
 ```
+
+### TODO: Resize chain-server after background IBD completes
+
+**When:** Background IBD reaches 100% (check: `docker logs chain-server-bitcoind-1 --tail 1` shows no more `[background validation]` lines)
+**Action:** Resize droplet from s-2vcpu-4gb ($24/mo) to s-1vcpu-2gb ($12/mo) via DO console or API
+**Why:** 4GB RAM only needed during IBD. Post-sync, tip chain uses ~300MB. 2GB + swap is plenty.
+**Check IBD progress:** `ssh root@pay.wopr.bot 'docker exec chain-server-bitcoind-1 bitcoin-cli -rpcuser=btcpay -rpcpassword=btcpay-chain-2026 getchainstates'` — when only 1 chainstate remains, IBD is done.
