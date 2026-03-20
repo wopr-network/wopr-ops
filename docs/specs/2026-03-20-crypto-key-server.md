@@ -1,4 +1,4 @@
-# Crypto Key Server — Shared Address Derivation Service
+# Crypto Key Server — Shared Address Derivation on Chain Server
 
 **Date:** 2026-03-20
 **Status:** Proposed
@@ -14,133 +14,141 @@ Each product (holyship, wopr, paperclip, nemoclaw) currently needs its own:
 - Crypto charge tracking tables
 - Payment method configuration
 
-That's 4x the config, 4x the watchers, 4x the failure surface. And we're missing BTC xpubs entirely (only EVM xpubs are derived so far).
+That's 4x the config, 4x the watchers, 4x the failure surface. We're also missing BTC xpubs entirely — only EVM xpubs are derived so far.
 
 ## Solution
 
-One **key server** on the chain server. Products don't touch crypto internals.
+Deploy platform-core's crypto billing module on the chain server as a shared service. Products don't run watchers or hold xpubs. They just request addresses and receive webhooks.
 
-### What the key server does
+**This is not new code.** It's platform-core's existing crypto checkout, address derivation, charge store, and webhook handler — deployed once on the chain server instead of four times on product VPSes.
 
-1. **Derives addresses** — products ask for an address, key server returns one
-2. **Tracks indices** — never reuses a derivation index
-3. **Watches chains** — one BTC watcher, one EVM watcher for all products
-4. **Calls back** — when payment confirmed, POSTs to product's webhook URL
+## API
 
-### What products do
+### `POST /address`
 
-1. `POST /charges` → get a deposit address back
-2. Display address to user
-3. Receive `POST /api/webhooks/crypto` when payment confirmed
-4. Credit the user's ledger (existing platform-core code)
+Derives the next unused address on a chain. Increments the derivation index atomically.
+
+```
+POST /address
+Authorization: Bearer {service_key}
+Content-Type: application/json
+
+{ "chain": "btc" }
+
+→ 201 Created
+{
+  "address": "bc1q...",
+  "chain": "btc",
+  "index": 847
+}
+```
+
+The service key identifies the tenant (via platform-core's existing gateway auth). The chain tells it which xpub to derive from. The index is returned for the caller's charge record.
+
+Supported chains: `btc`, `evm` (Base L2), `doge` (future).
+
+### `POST /charges`
+
+Creates a payment charge — derives an address, sets expiry, starts watching.
+
+```
+POST /charges
+Authorization: Bearer {service_key}
+Content-Type: application/json
+
+{
+  "chain": "btc",
+  "amountUsd": 50.00,
+  "callbackUrl": "https://api.holyship.wtf/api/webhooks/crypto",
+  "metadata": { "userId": "usr_abc", "planId": "pro" }
+}
+
+→ 201 Created
+{
+  "chargeId": "ch_abc123",
+  "address": "bc1q...",
+  "chain": "btc",
+  "amountUsd": 50.00,
+  "expiresAt": "2026-03-20T04:00:00Z"
+}
+```
+
+### `GET /charges/:id`
+
+Check charge status.
+
+```
+→ 200 OK
+{
+  "chargeId": "ch_abc123",
+  "status": "confirmed",
+  "address": "bc1q...",
+  "txHash": "abc123...",
+  "confirmations": 6,
+  "amountReceived": "0.0015 BTC",
+  "amountUsd": 50.00
+}
+```
 
 ## Architecture
 
 ```
 chain-server (pay.wopr.bot)
-├── bitcoind          (port 8332, already running)
-├── postgres          (charge tracking, address indices, product config)
-└── crypto-service    (Node.js, port 3100)
-    │
-    ├── POST /charges
-    │   Body: { product, chain, amountUsd, callbackUrl, metadata }
-    │   Returns: { chargeId, address, chain, expiresAt }
-    │
-    ├── GET /charges/:id
-    │   Returns: { chargeId, status, address, txHash, confirmations }
-    │
-    ├── BTC Watcher
-    │   - Polls bitcoind via RPC (listsinceblock)
-    │   - Matches incoming txs to known deposit addresses
-    │   - Waits for N confirmations
-    │   - POSTs to product callbackUrl
-    │
-    └── EVM Watcher
-        - Polls Base RPC (eth_getLogs for ERC20 Transfer events)
-        - Matches to known deposit addresses
-        - POSTs to product callbackUrl
+├── bitcoind              (port 8332, already running)
+├── postgres              (charges, addresses, chain config)
+└── platform-core         (port 3100, crypto billing subset)
+    ├── POST /address     → derive next address from chain xpub
+    ├── POST /charges     → create charge + derive address + start watching
+    ├── GET  /charges/:id → check status
+    ├── BTC watcher       → polls bitcoind via RPC (listsinceblock)
+    ├── EVM watcher       → polls Base RPC (eth_getLogs for ERC20 Transfer)
+    └── Webhook sender    → POSTs to callbackUrl on confirmation
 ```
 
-## Database (postgres on chain-server)
+## Database
+
+Uses platform-core's existing schema (Drizzle migrations), plus:
 
 ```sql
--- Products that use the key server
-CREATE TABLE products (
-  id TEXT PRIMARY KEY,           -- "holyship", "wopr", etc.
-  callback_url TEXT NOT NULL,    -- "http://10.120.0.5:3001/api/webhooks/crypto"
-  webhook_secret TEXT NOT NULL,  -- HMAC signing key
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- One row per chain. Master xpubs derived from seed.
--- The key server holds xpubs (public keys only), NOT private keys.
+-- One row per supported chain
 CREATE TABLE chains (
-  id TEXT PRIMARY KEY,           -- "btc", "evm", "doge"
-  xpub TEXT NOT NULL,            -- account-level xpub for this chain
-  network TEXT NOT NULL,         -- "mainnet", "base"
-  next_index INTEGER DEFAULT 0,  -- next derivation index (auto-increment)
-  rpc_url TEXT                   -- bitcoind RPC or Base RPC URL
+  id TEXT PRIMARY KEY,              -- "btc", "evm", "doge"
+  xpub TEXT NOT NULL,               -- account-level xpub
+  network TEXT NOT NULL,            -- "mainnet", "base"
+  next_index INTEGER DEFAULT 0,     -- atomic counter, never reuses
+  rpc_url TEXT                      -- bitcoind RPC or Base RPC
 );
 
--- Every address ever derived
-CREATE TABLE addresses (
+-- Every address ever derived (immutable append-only)
+CREATE TABLE derived_addresses (
   id SERIAL PRIMARY KEY,
   chain_id TEXT REFERENCES chains(id),
   derivation_index INTEGER NOT NULL,
   address TEXT NOT NULL UNIQUE,
+  tenant_id TEXT,                   -- from service key auth
   created_at TIMESTAMPTZ DEFAULT now()
 );
-
--- Charges (payment requests)
-CREATE TABLE charges (
-  id TEXT PRIMARY KEY,            -- nanoid
-  product_id TEXT REFERENCES products(id),
-  chain_id TEXT REFERENCES chains(id),
-  address_id INTEGER REFERENCES addresses(id),
-  amount_usd NUMERIC(12,2),
-  status TEXT DEFAULT 'pending',  -- pending, detected, confirmed, expired
-  tx_hash TEXT,
-  confirmations INTEGER DEFAULT 0,
-  callback_url TEXT NOT NULL,
-  callback_delivered BOOLEAN DEFAULT false,
-  expires_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  confirmed_at TIMESTAMPTZ
-);
 ```
 
-## Address Derivation
+Charges use platform-core's existing `crypto_charges` table.
+
+## Wallet Hierarchy
 
 ```
-POST /charges { product: "holyship", chain: "btc", amountUsd: 50 }
-
-1. Look up chain "btc" → get xpub, current next_index (e.g., 847)
-2. Derive address: xpub / 0 / 847 → "bc1q..."
-3. Increment next_index to 848 (atomic)
-4. Insert into addresses table
-5. Create charge record
-6. Return { chargeId, address: "bc1q...", chain: "btc" }
-```
-
-The product doesn't know or care about index 847. It just gets an address.
-
-## Wallet Hierarchy (from seed phrase)
-
-```
-Master Seed (paperclip-wallet.enc, passphrase: known)
-├── m/44'/0'/0'  → BTC xpub (all products share, index-partitioned)
-├── m/44'/60'/0' → EVM xpub (all products share, index-partitioned)
-├── m/44'/3'/0'  → DOGE xpub (future)
+Master Seed (paperclip-wallet.enc)
+├── m/44'/0'/0'   → BTC xpub  (one for all products)
+├── m/44'/60'/0'  → EVM xpub  (one for all products)
+├── m/44'/3'/0'   → DOGE xpub (future)
 └── ...
 
-Note: We do NOT need per-product xpubs anymore.
-One xpub per chain. The key server tracks which addresses
-belong to which product via the charges table.
+Per-product xpubs are ELIMINATED.
+One xpub per chain. The charges table tracks which
+tenant owns which address via service key auth.
 ```
 
-## Product Config Change
+## Product Config
 
-**Before (per product, 8+ env vars):**
+**Before (8+ env vars per product):**
 ```
 EVM_XPUB=xpub6DSV...
 EVM_RPC_BASE=https://mainnet.base.org
@@ -151,19 +159,20 @@ BTCPAY_STORE_ID=...
 BTCPAY_WEBHOOK_SECRET=...
 ```
 
-**After (per product, 2 env vars):**
+**After (1 env var per product):**
 ```
 CRYPTO_SERVICE_URL=http://10.120.0.5:3100
-CRYPTO_WEBHOOK_SECRET=<hmac-key>
 ```
+
+Service key auth reuses the existing gateway service key — no new credentials.
 
 ## Webhook Callback
 
 When the watcher detects a confirmed payment:
 
 ```
-POST {product.callback_url}
-X-Webhook-Signature: hmac-sha256(body, product.webhook_secret)
+POST {charge.callbackUrl}
+X-Webhook-Signature: hmac-sha256(body, tenant.webhook_secret)
 Content-Type: application/json
 
 {
@@ -178,31 +187,36 @@ Content-Type: application/json
 }
 ```
 
-Product's existing `POST /api/webhooks/crypto` handler credits the user's ledger. No change to platform-core's billing code — just the source of the webhook changes.
+Product's existing `POST /api/webhooks/crypto` handler credits the ledger. No change needed.
 
 ## Firewall
 
-Same DO Cloud Firewall as bitcoind:
-- Port 3100: accessible from product VPSes + admin IP only
-- Port 8332: already firewalled
-- Port 5432: internal only (no external access)
+DO Cloud Firewall (already configured):
+- Port 3100: product VPSes + admin IP only
+- Port 8332: product VPSes + admin IP only (bitcoind)
+- Port 5432: localhost only
 
-## Implementation
+## What Comes From platform-core
 
-This is a small Node.js service (~500 lines):
-- Hono HTTP server
-- Drizzle ORM + postgres
-- BTC watcher: `bitcoin-cli listsinceblock` every 30s
-- EVM watcher: `eth_getLogs` with Transfer topic every 15s
-- HMAC webhook signing
+Almost everything:
+- `billing/crypto/checkout.ts` — charge creation
+- `billing/crypto/btc/address-gen.ts` — BTC address derivation
+- `billing/crypto/evm/address-gen.ts` — EVM address derivation
+- `billing/crypto/btc/watcher.ts` — BTC payment detection
+- `billing/crypto/evm/watcher.ts` — EVM payment detection
+- `billing/crypto/webhook.ts` — webhook handler
+- `billing/crypto/charge-store.ts` — Drizzle charge persistence
+- `gateway/service-key-auth.ts` — tenant resolution from service key
 
-Can live in a new repo (`wopr-network/crypto-service`) or as a package in wopr-ops.
+New code: ~100 lines (Hono routes for /address and /charges, chain config seed).
 
 ## Migration Path
 
-1. Deploy crypto-service on chain-server
-2. Seed the chains table with BTC + EVM xpubs (derive from master seed)
-3. Register each product with its callback URL
-4. Update each product: remove all crypto env vars, add CRYPTO_SERVICE_URL
-5. Remove watcher code from platform-core's per-product boot path
-6. platform-core's checkout mutation calls crypto-service instead of local watchers
+1. Derive BTC xpub from master seed: `m/44'/0'/0'`
+2. Add `chains` and `derived_addresses` tables to platform-core schema
+3. Deploy platform-core on chain-server with crypto config
+4. Seed chains table (btc + evm xpubs, RPC URLs)
+5. Register product service keys
+6. Update products: remove all crypto env vars, add `CRYPTO_SERVICE_URL`
+7. Product checkout mutation calls crypto service instead of local watchers
+8. Remove watcher boot code from product VPSes
