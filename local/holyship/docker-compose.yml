@@ -121,7 +121,10 @@ services:
   # Caddy (reverse proxy, auto-TLS)
   # ---------------------------------------------------------------------------
   caddy:
-    image: caddy:2-alpine
+    build:
+      context: ./caddy
+      dockerfile: Dockerfile
+    image: caddy-cloudflare
     container_name: holyship-caddy
     ports:
       - "80:80"
@@ -130,6 +133,8 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    environment:
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
     depends_on:
       api:
         condition: service_healthy
