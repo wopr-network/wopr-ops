@@ -1,11 +1,9 @@
 #!/bin/bash
 # Shared Chain Server — Full automated provisioning
 #
-# Creates a DO droplet with 4GB RAM for chain sync, updates DNS,
-# downloads UTXO snapshot for fast-sync, starts BTCPay stack.
-#
-# After sync completes (~1hr with snapshot), all product VPSes
-# connect to this server via DO private networking.
+# Creates a DO droplet for a shared Bitcoin node, updates DNS,
+# and starts bitcoind. All product VPSes connect to this server
+# via DO private networking for native BTC watcher access.
 #
 # Prerequisites:
 #   - DO_API_TOKEN in env or ~/.bashrc
@@ -24,15 +22,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DO_TOKEN="${DO_API_TOKEN:?Set DO_API_TOKEN}"
 CF_TOKEN="${CLOUDFLARE_API_TOKEN:?Set CLOUDFLARE_API_TOKEN}"
-# wopr.bot zone — pay.wopr.bot will be the BTCPay admin URL
 CF_ZONE="c1dc2cc96846e1d7bf8606009f9a6f9e"
 DROPLET_NAME="chain-server"
 REGION="sfo2"
-# 4GB RAM needed for Bitcoin IBD + UTXO snapshot loading
 SIZE="s-2vcpu-4gb"
 IMAGE="ubuntu-24-04-x64"
 SSH_KEY_IDS="54912818,52980537"
-DOMAINS=("pay.wopr.bot")
+DOMAINS=("chain.wopr.bot")
 
 do_api() {
   local method=$1 path=$2; shift 2
@@ -60,7 +56,7 @@ if [ "${DESTROY_FIRST:-}" = "true" ]; then
 fi
 
 # --- Step 1: Create droplet ---
-echo "==> Creating droplet ($SIZE — 4GB RAM for chain sync)..."
+echo "==> Creating droplet ($SIZE — shared Bitcoin node)..."
 ENV_FILE="${SCRIPT_DIR}/.env.production"
 if [ ! -f "$ENV_FILE" ]; then
   echo "ERROR: $ENV_FILE not found."
@@ -129,7 +125,7 @@ for domain in "${DOMAINS[@]}"; do
 done
 
 # --- Step 4: Wait for cloud-init ---
-echo "==> Waiting for cloud-init (UTXO download takes 10-30 min on 4GB)..."
+echo "==> Waiting for cloud-init to complete..."
 sleep 60
 ssh-keygen -R "$IP" 2>/dev/null || true
 
@@ -146,16 +142,11 @@ done
 
 if [[ "$STATUS" != CHAIN_SERVER_READY* ]]; then
   echo "WARNING: Cloud-init not signaled yet. Check: ssh root@$IP 'tail -30 /var/log/cloud-init-output.log'"
-  echo "UTXO snapshot download may still be in progress."
 fi
 
 # --- Step 5: Verify ---
-echo "==> Verifying..."
+echo "==> Verifying bitcoind..."
 sleep 5
-HEALTH=$(ssh -o StrictHostKeyChecking=no root@"$IP" \
-  'curl -sf http://localhost:23002/api/v1/health 2>/dev/null' || echo "not ready yet")
-echo "    BTCPay health: $HEALTH"
-
 BLOCKS=$(ssh -o StrictHostKeyChecking=no root@"$IP" \
   'docker exec chain-server-bitcoind-1 bitcoin-cli -rpcuser=btcpay -rpcpassword=$(grep BTCPAY_BITCOIND_PASSWORD /opt/chain-server/.env | cut -d= -f2) getblockchaininfo 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(f\"{d[\"blocks\"]:,} blocks, {d[\"verificationprogress\"]:.1%}\")"' 2>/dev/null || echo "not synced yet")
 echo "    Bitcoin: $BLOCKS"
@@ -166,16 +157,13 @@ echo "=== Chain Server Deployed ==="
 echo "  Droplet:    $DROPLET_ID"
 echo "  Public IP:  $IP"
 echo "  Private IP: ${PRIVATE_IP:-N/A}"
-echo "  BTCPay:     http://$IP:23002 (admin setup needed)"
-echo "  DNS:        pay.wopr.bot → $IP"
+echo "  DNS:        chain.wopr.bot → $IP"
 echo "  SSH:        ssh root@$IP / ssh deploy@$IP"
 echo ""
 echo "Next steps:"
-echo "  1. Wait for UTXO snapshot to load (check: ssh root@$IP 'docker logs chain-server-bitcoind-1 --tail 5')"
-echo "  2. Set up BTCPay admin at http://$IP:23002"
-echo "  3. Create stores for each product (holyship, wopr, paperclip, nemoclaw)"
-echo "  4. Update each product's .env with BTCPAY_BASE_URL=http://${PRIVATE_IP:-$IP}:23002"
-echo "  5. After sync, resize droplet to s-1vcpu-2gb (\$12/mo) to save costs"
+echo "  1. Wait for bitcoind to sync (check: ssh root@$IP 'docker logs chain-server-bitcoind-1 --tail 5')"
+echo "  2. Update each product's .env with BITCOIN_RPC_URL=http://btcpay:${BTCPAY_BITCOIND_PASSWORD}@${PRIVATE_IP:-$IP}:8332"
+echo "  3. After sync, resize droplet to s-1vcpu-2gb (\$12/mo) to save costs"
 echo ""
 echo "To redeploy from scratch:"
 echo "  DESTROY_FIRST=true bash vps/chain-server/provision.sh"

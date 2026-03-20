@@ -20,12 +20,10 @@ services:
     container_name: holyship-postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./scripts/create-multiple-databases.sh:/docker-entrypoint-initdb.d/create-multiple-databases.sh:ro
     environment:
       POSTGRES_USER: holyship
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: holyship
-      POSTGRES_MULTIPLE_DATABASES: nbxplorer,btcpayserver
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U holyship"]
       interval: 5s
@@ -74,11 +72,6 @@ services:
       HOLYSHIP_GATEWAY_KEY: ${HOLYSHIP_GATEWAY_KEY}
       HOLYSHIP_MODEL_TIER_OVERRIDE: ${HOLYSHIP_MODEL_TIER_OVERRIDE:-}
       DOCKER_NETWORK: holyship_holyship
-      # BTCPay crypto payments
-      BTCPAY_API_KEY: ${BTCPAY_API_KEY:-}
-      BTCPAY_BASE_URL: http://btcpay:23002
-      BTCPAY_STORE_ID: ${BTCPAY_STORE_ID:-}
-      BTCPAY_WEBHOOK_SECRET: ${BTCPAY_WEBHOOK_SECRET:-}
       EVM_XPUB: ${EVM_XPUB:-}
       EVM_RPC_BASE: ${EVM_RPC_BASE:-https://mainnet.base.org}
     group_add:
@@ -145,89 +138,10 @@ services:
       - holyship
 
 
-  # ---------------------------------------------------------------------------
-  # Bitcoind (regtest for local dev, mainnet for production)
-  # ---------------------------------------------------------------------------
-  bitcoind:
-    image: btcpayserver/bitcoin:30.2
-    container_name: holyship-bitcoind
-    restart: unless-stopped
-    environment:
-      BITCOIN_NETWORK: ${BITCOIN_NETWORK:-regtest}
-      BITCOIN_WALLETDIR: /data/wallets
-      BITCOIN_EXTRA_ARGS: |-
-        server=1
-        rpcuser=btcpay
-        rpcpassword=${BTCPAY_BITCOIND_PASSWORD:-btcpay-local}
-        rpcallowip=0.0.0.0/0
-        rpcbind=0.0.0.0
-        fallbackfee=0.0002
-        prune=5000
-    volumes:
-      - bitcoin_data:/data
-    networks:
-      - holyship
-
-  # ---------------------------------------------------------------------------
-  # NBXplorer (blockchain indexer for BTCPay)
-  # ---------------------------------------------------------------------------
-  nbxplorer:
-    image: nicolasdorier/nbxplorer:2.6.1
-    container_name: holyship-nbxplorer
-    restart: unless-stopped
-    environment:
-      NBXPLORER_NETWORK: ${BITCOIN_NETWORK:-regtest}
-      NBXPLORER_CHAINS: btc
-      NBXPLORER_BTCRPCURL: http://bitcoind:18443/
-      NBXPLORER_BTCRPCUSER: btcpay
-      NBXPLORER_BTCRPCPASSWORD: ${BTCPAY_BITCOIND_PASSWORD:-btcpay-local}
-      NBXPLORER_BTCNODEENDPOINT: bitcoind:18444
-      NBXPLORER_POSTGRES: User ID=holyship;Password=${POSTGRES_PASSWORD};Include Error Detail=true;Host=postgres;Port=5432;Database=nbxplorer
-      NBXPLORER_AUTOMIGRATE: "1"
-      NBXPLORER_BIND: 0.0.0.0:32838
-      NBXPLORER_NOAUTH: "1"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      bitcoind:
-        condition: service_started
-    networks:
-      - holyship
-
-  # ---------------------------------------------------------------------------
-  # BTCPay Server (crypto payments)
-  # ---------------------------------------------------------------------------
-  btcpay:
-    image: btcpayserver/btcpayserver:2.3.5
-    container_name: holyship-btcpay
-    restart: unless-stopped
-    ports:
-      - "14142:23002"
-    environment:
-      BTCPAY_NETWORK: ${BITCOIN_NETWORK:-regtest}
-      BTCPAY_CHAINS: btc
-      BTCPAY_POSTGRES: User ID=holyship;Password=${POSTGRES_PASSWORD};Include Error Detail=true;Host=postgres;Port=5432;Database=btcpayserver
-      BTCPAY_BTCEXPLORERURL: http://nbxplorer:32838/
-      BTCPAY_BIND: 0.0.0.0:23002
-      BTCPAY_ALLOW-ADMIN-REGISTRATION: "true"
-      BTCPAY_DISABLE-REGISTRATION: "false"
-    depends_on:
-      - nbxplorer
-    networks:
-      - holyship
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:23002/api/v1/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
-
 volumes:
   postgres_data:
   caddy_data:
   caddy_config:
-  bitcoin_data:
 
 networks:
   holyship:
