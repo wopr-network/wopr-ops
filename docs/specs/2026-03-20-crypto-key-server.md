@@ -73,6 +73,27 @@ Content-Type: application/json
 }
 ```
 
+### `GET /chains`
+
+List all enabled payment methods. Products use this to render checkout UI dynamically — no hardcoded token list.
+
+```
+GET /chains
+Authorization: Bearer {service_key}
+
+→ 200 OK
+[
+  { "id": "btc",       "token": "BTC",  "network": "mainnet",  "decimals": 8  },
+  { "id": "base-usdc", "token": "USDC", "network": "base",     "decimals": 6  },
+  { "id": "base-usdt", "token": "USDT", "network": "base",     "decimals": 6  },
+  { "id": "base-dai",  "token": "DAI",  "network": "base",     "decimals": 18 },
+  { "id": "arb-usdc",  "token": "USDC", "network": "arbitrum", "decimals": 6  },
+  { "id": "doge",      "token": "DOGE", "network": "mainnet",  "decimals": 8  }
+]
+```
+
+Add a row to the chains table → this endpoint returns it → every product's checkout UI shows the new option. Zero deploys.
+
 ### `GET /charges/:id`
 
 Check charge status.
@@ -110,14 +131,32 @@ chain-server (pay.wopr.bot)
 Uses platform-core's existing schema (Drizzle migrations), plus:
 
 ```sql
--- One row per supported chain
+-- Every supported token on every network.
+-- Add a row → all products accept the new token instantly.
+-- Delete a row → stop accepting it. No deploys.
 CREATE TABLE chains (
-  id TEXT PRIMARY KEY,              -- "btc", "evm", "doge"
-  xpub TEXT NOT NULL,               -- account-level xpub
-  network TEXT NOT NULL,            -- "mainnet", "base"
-  next_index INTEGER DEFAULT 0,     -- atomic counter, never reuses
-  rpc_url TEXT                      -- bitcoind RPC or Base RPC
+  id TEXT PRIMARY KEY,              -- "btc", "base-usdc", "arb-usdc", "doge"
+  network TEXT NOT NULL,            -- "mainnet", "base", "arbitrum", "ethereum"
+  token TEXT NOT NULL,              -- "BTC", "USDC", "USDT", "DAI", "DOGE", "ETH"
+  contract TEXT,                    -- ERC20 contract address (null for native coins)
+  decimals INTEGER DEFAULT 18,     -- token decimals (6 for USDC/USDT, 8 for BTC)
+  xpub TEXT NOT NULL,              -- account-level xpub for address derivation
+  next_index INTEGER DEFAULT 0,    -- atomic counter, never reuses
+  rpc_url TEXT NOT NULL,           -- bitcoind RPC, Base RPC, Arbitrum RPC, etc.
+  confirmations INTEGER DEFAULT 6, -- required confirmations before callback
+  enabled BOOLEAN DEFAULT true,    -- disable without deleting
+  created_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Seed data:
+-- INSERT INTO chains VALUES
+--   ('btc',       'mainnet',  'BTC',  null,                                        8,  'xpub6...btc', 0, 'http://localhost:8332', 6,  true),
+--   ('base-usdc', 'base',     'USDC', '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', 6,  'xpub6...evm', 0, 'https://mainnet.base.org', 12, true),
+--   ('base-usdt', 'base',     'USDT', '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2', 6,  'xpub6...evm', 0, 'https://mainnet.base.org', 12, true),
+--   ('base-dai',  'base',     'DAI',  '0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb', 18, 'xpub6...evm', 0, 'https://mainnet.base.org', 12, true),
+--   ('base-eth',  'base',     'ETH',  null,                                        18, 'xpub6...evm', 0, 'https://mainnet.base.org', 12, true),
+--   ('arb-usdc',  'arbitrum', 'USDC', '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', 6,  'xpub6...evm', 0, 'https://arb1.arbitrum.io/rpc', 12, true),
+--   ('doge',      'mainnet',  'DOGE', null,                                        8,  'xpub6...doge',0, 'http://localhost:22555', 6,  true);
 
 -- Every address ever derived (immutable append-only)
 CREATE TABLE derived_addresses (
@@ -132,18 +171,20 @@ CREATE TABLE derived_addresses (
 
 Charges use platform-core's existing `crypto_charges` table.
 
+**The magic:** `INSERT INTO chains` → every product accepts a new token. No code changes, no deploys, no PRs. The EVM watcher reads the chains table on startup and subscribes to Transfer events for every enabled ERC20 contract. Add Arbitrum USDC? One row. Remove USDT? Set `enabled = false`.
+
 ## Wallet Hierarchy
 
 ```
 Master Seed (paperclip-wallet.enc)
-├── m/44'/0'/0'   → BTC xpub  (one for all products)
-├── m/44'/60'/0'  → EVM xpub  (one for all products)
-├── m/44'/3'/0'   → DOGE xpub (future)
+├── m/44'/0'/0'   → BTC xpub   (native BTC)
+├── m/44'/60'/0'  → EVM xpub   (all EVM chains — Base, Arbitrum, Ethereum, etc.)
+├── m/44'/3'/0'   → DOGE xpub  (native DOGE)
 └── ...
 
-Per-product xpubs are ELIMINATED.
-One xpub per chain. The charges table tracks which
-tenant owns which address via service key auth.
+One xpub per key type, not per product or per network.
+EVM xpub works across all EVM chains (same address on Base, Arbitrum, Ethereum).
+The charges table tracks which tenant owns which address.
 ```
 
 ## Product Config
