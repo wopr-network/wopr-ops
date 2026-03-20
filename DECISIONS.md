@@ -97,3 +97,33 @@ bitcoind:
 ```
 
 Bitcoind starts clean, syncs mainnet, nbxplorer connects, BTCPay works. If you want to simplify the holyship stack you can drop the custom entrypoint and use this instead.
+
+**Further update (2026-03-20):** We abandoned BTCPay entirely. See the dedicated chain server decision below.
+
+---
+
+## 2026-03-20 — Dedicated chain server replaces per-product BTCPay
+
+**Context:** We initially deployed bitcoind + nbxplorer + BTCPay on each product's VPS ($6 droplets). Problems: 1GB RAM couldn't sync mainnet (8% after days), each product would need its own chain sync, wasted disk/RAM across 4 droplets.
+
+**Decision:** One dedicated chain server (s-2vcpu-4gb, $24/mo) at pay.wopr.bot running just bitcoind. All 4 products connect via DO private networking or DNS. BTCPay removed entirely — platform-core's native BTC watcher talks to bitcoind RPC directly. NBXplorer removed — not needed without BTCPay.
+
+**Result:** Chain server syncing at ~23 blocks/min with assumeutxo snapshot (block 910,000 via torrent). Single bitcoind serves holyship, wopr, paperclip, nemoclaw. Will resize to $12/mo after sync.
+
+---
+
+## 2026-03-20 — Caddy needs custom build + explicit network
+
+**Context:** After scp'ing an updated docker-compose.yml to the holyship VPS, Caddy started crash-looping with "module not registered: dns.providers.cloudflare". The local compose used stock `caddy:2-alpine` but the Caddyfile requires the cloudflare DNS plugin for DNS-01 TLS challenges.
+
+**Decision:** Caddy must always use a custom-built image (`caddy-cloudflare`) with the cloudflare DNS plugin. Build from `caddy/Dockerfile` (xcaddy + github.com/caddy-dns/cloudflare). Also: Caddy MUST be on the same Docker network as API and UI services — compose `networks:` section is required.
+
+**Gotcha:** When the compose defines a named network (e.g., `holyship`), Docker creates it as `<project>_holyship`. If any service doesn't explicitly join that network, it lands on `<project>_default` and can't resolve other service names. This caused 502 errors — Caddy couldn't reach `api:3001` or `ui:3000`.
+
+---
+
+## 2026-03-20 — BITCOIN_EXTRA_ARGS newline expansion broken in Docker Compose
+
+**Context:** The `btcpayserver/bitcoin` image accepts `BITCOIN_EXTRA_ARGS` as a newline-separated list of bitcoin.conf directives. When set via Docker Compose environment variables, `\n` escape sequences are written literally to the config file rather than expanding into real newlines.
+
+**Decision:** Use a wrapper entrypoint script that writes a proper `bitcoin.conf` file directly and execs `bitcoind` bypassing the stock entrypoint entirely. This avoids all the BTCPay entrypoint quirks and gives full control over config generation.

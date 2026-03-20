@@ -2021,3 +2021,123 @@ Not yet deployed. Checklist for go-live:
 - [ ] GHCR CI/CD pipeline for paperclip-platform + paperclip images
 - [ ] Smoke test: sign-up → Stripe pay → credits → instance provisioned → subdomain accessible
 - [ ] Smoke test: sign-up → crypto pay → watcher detects transfer → credits → instance provisioned
+
+---
+
+## Chain Server Operations
+
+Dedicated Bitcoin chain server at pay.wopr.bot. All 4 products share this single bitcoind instance. No BTCPay, no nbxplorer.
+
+### SSH access
+
+```bash
+ssh root@pay.wopr.bot
+# or by IP: ssh root@167.71.118.221
+```
+
+### Check sync progress
+
+```bash
+docker logs chain-server-bitcoind-1 --tail 5
+```
+
+### Check current block count
+
+```bash
+docker exec chain-server-bitcoind-1 bitcoin-cli -rpcuser=btcpay -rpcpassword=btcpay-chain-2026 getblockcount
+```
+
+### RPC test from external host
+
+```bash
+curl -sf -X POST http://pay.wopr.bot:8332 \
+  -H "Content-Type: application/json" \
+  -u "btcpay:btcpay-chain-2026" \
+  -d '{"jsonrpc":"1.0","method":"getblockcount","params":[],"id":1}'
+```
+
+### Firewall
+
+DO Cloud Firewall: `chain-server-fw`
+- SSH: admin IP only
+- TCP 8332 (RPC): product VPS IPs only (10.120.0.x DO private network range)
+
+### assumeutxo snapshot
+
+Sync bootstrapped from a UTXO snapshot at block 910,000 (9GB) loaded via torrent:
+
+```
+magnet:?xt=urn:btih:7019437a2b1530624b100c0795cfc5f90b8322ca&dn=utxo-910000.dat
+```
+
+After snapshot load, bitcoind syncs remaining blocks forward from 910,000. At ~23 blocks/min this completes in hours rather than weeks.
+
+### Prune config
+
+```
+prune=5000   # 5GB, ~17 days of block history
+```
+
+### Wrapper entrypoint
+
+The chain server uses a custom wrapper entrypoint script that bypasses the stock BTCPay entrypoint entirely. It writes a proper `bitcoin.conf` file and execs `bitcoind` directly. This avoids:
+- The `-mainnet` flag bug in `btcpayserver/bitcoin:30.2`
+- `BITCOIN_EXTRA_ARGS` `\n` expansion not working in Docker Compose env vars
+
+### Resize after sync
+
+Once fully synced to chain tip, resize the droplet:
+
+```bash
+# Via DO console or doctl:
+doctl compute droplet-action resize <droplet-id> --size s-1vcpu-2gb --wait
+# Saves ~$12/mo (from $24 to $12)
+```
+
+---
+
+## Caddy Gotchas
+
+### Must use custom build for DNS-01 TLS
+
+Stock `caddy:2-alpine` does not include the Cloudflare DNS plugin. Any VPS using DNS-01 TLS challenges (all of ours) requires a custom-built Caddy image with `github.com/caddy-dns/cloudflare`.
+
+Build lives in `caddy/Dockerfile` (xcaddy):
+
+```dockerfile
+FROM caddy:builder AS builder
+RUN xcaddy build --with github.com/caddy-dns/cloudflare
+FROM caddy:latest
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+```
+
+If you see `module not registered: dns.providers.cloudflare` in Caddy logs: wrong image — rebuild with the custom Dockerfile.
+
+### Must be on the same Docker network as API/UI
+
+Caddy resolves upstream service names (e.g., `api:3001`, `ui:3000`) via Docker's internal DNS. If Caddy is on a different network, name resolution fails and all upstream requests return 502.
+
+When a compose file defines a named network (e.g., `holyship`), Docker creates it as `<project>_holyship`. Every service that needs to communicate must explicitly declare:
+
+```yaml
+networks:
+  - holyship
+```
+
+### Diagnosing 502 errors
+
+```bash
+# Test if Caddy can reach the API container by name:
+docker exec holyship-caddy wget -qO- http://api:3001/health
+
+# If output is "wget: bad address 'api'": network isolation issue
+# If output is JSON: upstream is reachable, issue is elsewhere
+```
+
+### After editing a bind-mounted Caddyfile
+
+`caddy reload` reloads from running process state, not the file. After editing a bind-mounted Caddyfile:
+
+```bash
+docker restart holyship-caddy   # (or the appropriate project prefix)
+```

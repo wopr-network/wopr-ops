@@ -45,7 +45,7 @@ platform-core (npm package — v1.42.1+)
     │    ├── Credits are nanodollars, integer math only
     │    ├── $5 signup grant via grantSignupCredits()
     │    ├── debitCapped() for budget-limited operations
-    │    └── Stripe + BTCPay crypto checkout
+    │    └── Stripe + BTC crypto checkout (native watcher → shared chain server at pay.wopr.bot)
     ├── Tenant types: personal, org, platform_service
     │    └── platform_service bypasses credit gate (company pays, ledger still tracks)
     ├── FleetManager (Docker container lifecycle)
@@ -158,9 +158,10 @@ Internet
 
 Production VPS (DO sfo2, s-1vcpu-1gb, 5GB swap, IP 138.68.46.192)
   └─ docker-compose.yml (/opt/holyship/)
-       ├─ caddy (custom build: caddy-dns/cloudflare plugin)  (80, 443 — DNS-01 TLS via CF)
+       ├─ caddy (custom build: caddy-cloudflare, xcaddy + caddy-dns/cloudflare)  (80, 443 — DNS-01 TLS via CF)
        │    ├─ holyship.wtf, www.holyship.wtf → holyship-ui:3000
        │    └─ api.holyship.wtf               → holyship-api:3001
+       │    NOTE: Caddy + api + ui MUST all be on the same named Docker network
        ├─ holyship-api (platform-core v1.42.1)        (3001 — internal)
        │    ├─ Flow engine (state machine, gates, claim/report)
        │    ├─ GitHub App webhook at /api/github/webhook
@@ -180,6 +181,7 @@ Production VPS (DO sfo2, s-1vcpu-1gb, 5GB swap, IP 138.68.46.192)
        │    ├─ /api/github/repos (Next.js API route for dashboard repo listing)
        │    └─ Config grid, gap checklist, flow diagram with diff highlighting
        └─ postgres:16-alpine             (5432 — internal)
+       NOTE: No bitcoind/nbxplorer/BTCPay on this VPS. BTC payments handled by the dedicated chain server.
 
   Auto-deploy: auto-pull.sh cron (every 60s) detects new GHCR digests, restarts services
 
@@ -337,6 +339,27 @@ User buys credits (Stripe checkout)
   → NemoClaw sidecar wires openclaw.json → gateway_url + service_key
   → every LLM call → gateway → meters tokens → debits credits
 ```
+
+## Chain Server (pay.wopr.bot)
+
+Dedicated Bitcoin chain server shared by all 4 products. Replaces per-product BTCPay stacks.
+
+```
+Chain Server (DO sfo2, s-2vcpu-4gb, $24/mo → resize to $12/mo after sync)
+  IP: 167.71.118.221
+  Private IP: 10.120.0.5
+  Hostname: pay.wopr.bot
+  └─ docker-compose.yml (/opt/chain-server/)
+       └─ bitcoind only (mainnet, pruned 5GB, port 8332)
+            ├─ Syncing via assumeutxo snapshot (block 910,000 — torrent)
+            ├─ Products connect via RPC at pay.wopr.bot:8332
+            ├─ DO Cloud Firewall (chain-server-fw):
+            │    ├─ SSH: admin IP only
+            │    └─ TCP 8332: product VPS IPs only (10.120.0.x range)
+            └─ After sync: resize to s-1vcpu-2gb ($12/mo)
+```
+
+BTCPay, nbxplorer: removed entirely. platform-core's native BTC watcher uses bitcoind RPC directly.
 
 ## Shared Dependencies
 
