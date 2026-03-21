@@ -1,0 +1,35 @@
+# Add this service to /opt/chain-server/docker-compose.yml on the chain server
+# after doge-chaindata is available on GHCR.
+#
+# Pre-requisite: load chaindata into the doge_data volume:
+#   docker pull ghcr.io/wopr-network/doge-chaindata:latest
+#   docker volume create doge_data
+#   docker create --name doge-tmp ghcr.io/wopr-network/doge-chaindata:latest
+#   docker cp doge-tmp:/chaindata/. /var/lib/docker/volumes/doge_data/_data/
+#   docker rm doge-tmp
+
+  dogecoind:
+    image: blocknetdx/dogecoin:latest
+    container_name: chain-dogecoind
+    command: >
+      dogecoind
+        -server=1
+        -rpcuser=doge
+        -rpcpassword=${DOGE_RPC_PASSWORD}
+        -rpcallowip=0.0.0.0/0
+        -rpcbind=0.0.0.0
+        -rpcport=22555
+        -prune=2200
+        -printtoconsole=1
+        -maxconnections=24
+    ports:
+      - "22555:22555"
+    volumes:
+      - doge_data:/home/dogecoin/.dogecoin
+    restart: unless-stopped
+
+# Also add to the volumes: section:
+#   doge_data:
+
+# And add to .env:
+#   DOGE_RPC_PASSWORD=<generate-a-password>

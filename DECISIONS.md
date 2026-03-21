@@ -127,3 +127,73 @@ Bitcoind starts clean, syncs mainnet, nbxplorer connects, BTCPay works. If you w
 **Context:** The `btcpayserver/bitcoin` image accepts `BITCOIN_EXTRA_ARGS` as a newline-separated list of bitcoin.conf directives. When set via Docker Compose environment variables, `\n` escape sequences are written literally to the config file rather than expanding into real newlines.
 
 **Decision:** Use a wrapper entrypoint script that writes a proper `bitcoin.conf` file directly and execs `bitcoind` bypassing the stock entrypoint entirely. This avoids all the BTCPay entrypoint quirks and gives full control over config generation.
+
+---
+
+## 2026-03-20 — Crypto key server replaces BTCPay across all products
+
+**Context:** BTCPay was a per-product nightmare: 4 separate stacks, 4 sets of xpubs, 4 watchers, 4 webhook configs. Each $6 droplet couldn't sync mainnet. Even the shared chain server only ran bitcoind — products still needed their own watchers and webhook plumbing.
+
+**Decision:** Centralized crypto key server (`pay.wopr.bot:3100`) built into platform-core. Products call `POST /charges` and receive webhooks — no local watchers, no xpubs, no BTCPay. Key server handles: HD address derivation (BIP-44), Chainlink on-chain oracle for exchange rates, native amount tracking (sats/token units, locked at charge creation), partial payment accumulation, durable webhook delivery (outbox pattern with exponential backoff).
+
+**Stack:** Hono HTTP + Drizzle/Postgres + bitcoind, all Docker on one droplet. Auth: service key for products, admin token for path registration.
+
+**Result:** BTCPay completely removed from platform-core (v1.44.0). `CryptoServiceClient` replaces `BTCPayClient`. All 4 products bumped. Old BTCPay env vars (`BTCPAY_*`) replaced with `CRYPTO_SERVICE_URL` + `CRYPTO_WEBHOOK_SECRET`.
+
+---
+
+## 2026-03-21 — DOGE/LTC node deployment
+
+**Context:** Chain server needs DOGE and LTC nodes alongside bitcoind for native payment processing.
+
+**DOGE — synced via temp droplet + GHCR snapshot:**
+Temp droplet downloaded blockchain snapshot from `Blockchains-Download/Dogecoin` GitHub releases (Dec 2025, 10GB compressed → 17GB extracted), synced to tip, pushed pruned blocks to `ghcr.io/wopr-network/doge-chaindata:latest`, destroyed droplet. Loaded blocks on chain server, dogecoind rebuilding chainstate from local blocks.
+
+**LTC — syncing from peers directly on chain server:**
+Attached 100GB DO block storage volume (`ltc-sync`, $10/mo) to chain server at `/mnt/ltc_sync`. Running `uphold/litecoin-core` with `prune=2200`. Syncing ~90GB full chain from peers, will prune to ~2-3GB. After sync: move pruned data to main disk, detach and delete volume.
+
+**Lessons learned:**
+- `bootstrap.sochain.com` is dead — use GitHub snapshots (Blockchains-Download org).
+- DOGE minimum prune is **2200 MB** (not 2048 like BTC).
+- **Never use `-reindex` with prune** — destroys existing block files.
+- **LevelDB chainstate has per-instance obfuscation keys** — chainstate does NOT survive across container instances. Only back up blocks/, not chainstate/. The node rebuilds chainstate from blocks automatically (~hours, not days).
+- **`blocknetdx/dogecoin` image injects `-txindex=1` by default** — conflicts with prune. Use a wrapper entrypoint to write your own config and `exec dogecoind` directly.
+- **`uphold/litecoin-core` is the clean LTC image** — no default flags, passes args straight to litecoind. DNS seeds work out of the box.
+- **DOGE DNS seeds fail inside Docker** — hostnames don't resolve in containers. Use IP addresses for `addnode` lines.
+- **`FROM scratch` Docker images need a dummy command** for `docker create` — `docker create --name x image ""` works, plain `docker create --name x image` fails with "no command specified".
+- Fresh DO droplets have broken `systemd-resolved` — fix immediately: `echo "nameserver 1.1.1.1" > /etc/resolv.conf`
+- **DO can't resize disk independently** — disk is tied to plan. Use block storage volumes ($0.10/GB/mo) for temporary extra space.
+- **DO block storage 200GB fails** — account limit. 100GB works.
+
+**Cost:** DOGE temp droplet ~$3 total. LTC volume $10/mo temporary.
+
+---
+
+## 2026-03-21 — Wrapper entrypoint pattern for chain nodes
+
+**Context:** Both `btcpayserver/bitcoin` and `blocknetdx/dogecoin` Docker images inject default flags that conflict with our config (mainnet wallet creation bug, txindex=1 with prune). Fighting image defaults via command-line overrides is fragile.
+
+**Decision:** All chain nodes use the same wrapper pattern: bind-mount a shell script as `/opt/wrapper.sh`, write the config file directly, `exec` the daemon. No reliance on image entrypoints or default configs. Used for bitcoind, dogecoind. LTC uses `uphold/litecoin-core` which is clean but still gets the wrapper for consistency.
+
+```yaml
+entrypoint: ["/opt/wrapper.sh"]
+volumes:
+  - ./dogecoind-wrapper.sh:/opt/wrapper.sh:ro
+```
+
+---
+
+## 2026-03-21 — Sync LTC on the chain server, not a separate droplet
+
+**Context:** For DOGE, we used a temp droplet to sync, exported to GHCR, then loaded on the chain server. This took all night, cost ~$3, and ultimately failed to preserve the chainstate across containers (LevelDB obfuscation key is per-instance). The only value was the block files — and dogecoind rebuilds chainstate from blocks anyway, taking hours regardless.
+
+**Decision:** Skip the temp droplet for LTC. Attach a temporary 100GB DO block storage volume ($10/mo) to the chain server, sync LTC directly from peers. After sync + prune (~3GB), move pruned data to main disk, detach and delete the volume. Zero GHCR complexity, zero temp droplets, zero chainstate transfer issues.
+
+**Why this is better:**
+- Chainstate doesn't transfer across containers, so the GHCR snapshot only saves block download time
+- LTC peers are fast enough (~90GB download in 12-24hrs)
+- Block storage is $10/mo and can be deleted after sync — cheaper than a temp droplet running for hours
+- No risk of extraction failures, Docker image layer gymnastics, or disk space juggling
+- The chain server has the CPU/RAM to sync while running other services
+
+**Tradeoff:** No GHCR backup for LTC blocks. If the chain server dies, LTC re-syncs from peers (~24hrs). Acceptable for a pruned node.

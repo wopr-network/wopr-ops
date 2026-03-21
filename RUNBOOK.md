@@ -8,6 +8,104 @@
 **Last Updated:** 2026-03-18
 **Last Operation:** NemoClaw full production deployment — Stripe webhook + credits verified, inference gateway wired, DNS wildcard set, CI/CD green, auto-deploy live.
 
+## 2026-03-21 — Crypto Key Server + DOGE Node Deployment
+
+### What shipped
+- **platform-core v1.44.0** — BTCPay completely removed. Crypto key server routes, CryptoServiceClient, watcher service, Chainlink oracle, webhook outbox, partial payments, native amount tracking.
+- **All 4 products bumped to v1.44.0** — wopr-platform, holyship, paperclip-platform, nemoclaw-platform. BTCPayClient → CryptoServiceClient across all products.
+- **DOGE node syncing** — temp droplet downloading GitHub blockchain snapshot (Blockchains-Download/Dogecoin, Dec 2025), will export pruned volume to GHCR.
+
+### Chain Server Operations
+
+```bash
+# SSH to chain server
+ssh root@pay.wopr.bot  # 167.71.118.221
+
+# Check crypto key server
+curl http://pay.wopr.bot:3100/chains
+
+# Check bitcoind sync
+ssh root@pay.wopr.bot 'docker exec chain-server-bitcoind-1 bitcoin-cli -rpcuser=btcpay -rpcpassword=$(grep BTCPAY_BITCOIND_PASSWORD /opt/chain-server/.env | cut -d= -f2) getblockchaininfo'
+
+# Check dogecoind
+ssh root@pay.wopr.bot 'docker exec chain-dogecoind dogecoin-cli -rpcuser=doge -rpcpassword=doge-chain-2026 getblockchaininfo'
+
+# Check litecoind
+ssh root@pay.wopr.bot 'docker exec chain-litecoind litecoin-cli -rpcuser=ltc -rpcpassword=ltc-chain-2026 getblockchaininfo'
+
+# Check all 3 chains at once
+ssh root@pay.wopr.bot 'for c in "chain-server-bitcoind-1 bitcoin-cli -rpcuser=btcpay -rpcpassword=btcpay-chain-2026" "chain-dogecoind dogecoin-cli -rpcuser=doge -rpcpassword=doge-chain-2026" "chain-litecoind litecoin-cli -rpcuser=ltc -rpcpassword=ltc-chain-2026"; do set -- $c; echo "=== $1 ==="; docker exec $@ getblockchaininfo 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(f\"blocks={d[\"blocks\"]} progress={d[\"verificationprogress\"]:.4f} pruned={d[\"pruned\"]} conn={d.get(\"connections\",0)}\")" 2>/dev/null || echo "not ready"; done'
+
+# Restart crypto key server
+ssh root@pay.wopr.bot 'cd /opt/chain-server && docker compose restart crypto'
+
+# Restart all chain services
+ssh root@pay.wopr.bot 'cd /opt/chain-server && docker compose --env-file .env up -d'
+
+# View webhook delivery failures
+ssh root@pay.wopr.bot 'docker exec chain-postgres psql -U platform crypto_key_server -c "SELECT charge_id, status, attempts, last_error FROM webhook_deliveries WHERE status = '\''failed'\''"'
+
+# Re-add DOGE peers (drop after restart — hostnames don't resolve in container)
+ssh root@pay.wopr.bot 'for ip in 173.212.197.63 34.50.85.108 138.201.132.34 142.132.213.251 176.9.54.92 94.130.71.31 23.88.0.168 37.27.229.59; do docker exec chain-dogecoind dogecoin-cli -rpcuser=doge -rpcpassword=doge-chain-2026 addnode "$ip" "onetry"; done'
+
+# Fix DNS on chain server (reverts after reboot)
+ssh root@pay.wopr.bot 'echo "nameserver 1.1.1.1" > /etc/resolv.conf; echo "nameserver 8.8.8.8" >> /etc/resolv.conf'
+```
+
+### LTC Sync Volume (temporary)
+
+```bash
+# LTC syncs on attached DO block storage volume (100GB, $10/mo)
+# Mounted at /mnt/ltc_sync on chain server
+# After LTC fully synced + pruned (~3GB):
+
+# 1. Stop litecoind
+ssh root@pay.wopr.bot 'docker stop chain-litecoind && docker rm chain-litecoind'
+
+# 2. Create Docker volume and copy pruned data
+ssh root@pay.wopr.bot 'docker volume create ltc_data && cp -a /mnt/ltc_sync/.litecoin/* /var/lib/docker/volumes/ltc_data/_data/'
+
+# 3. Update compose: change /mnt/ltc_sync to ltc_data volume, restart
+# 4. Verify litecoind loads and syncs
+# 5. Detach and delete volume via DO API to stop $10/mo charge
+```
+
+### DOGE GHCR Backup (disaster recovery)
+
+```bash
+# Block files backed up at ghcr.io/wopr-network/doge-chaindata:latest
+# NOTE: Only blocks/ are useful — chainstate has per-instance obfuscation keys
+# To restore blocks from backup:
+docker pull ghcr.io/wopr-network/doge-chaindata:latest
+docker create --name doge-tmp ghcr.io/wopr-network/doge-chaindata:latest ""
+docker export doge-tmp | tar x -C /var/lib/docker/volumes/doge_data/_data/ --strip-components=1 chaindata
+docker rm doge-tmp && docker rmi ghcr.io/wopr-network/doge-chaindata:latest
+# dogecoind will rebuild chainstate from blocks (~hours)
+```
+
+### Gotchas
+- DOGE/LTC minimum prune is **2200 MB** (not 2048 like BTC)
+- **Never** use `-reindex` with prune — destroys existing block files
+- **LevelDB chainstate doesn't survive across containers** — obfuscation key is per-instance. Only back up blocks/.
+- `blocknetdx/dogecoin` injects `-txindex=1` by default — use wrapper entrypoint to override
+- `uphold/litecoin-core` is clean — no default flag issues, DNS works
+- DOGE hostnames don't resolve inside Docker — use IP addresses for `addnode`
+- `FROM scratch` images need dummy command: `docker create --name x image ""`
+- DO can't resize disk independently — use block storage volumes ($0.10/GB/mo)
+- Chain server DNS reverts to broken systemd-resolved on reboot — fix in cloud-init
+
+### Key env vars (chain server /opt/chain-server/.env)
+| Var | Purpose |
+|-----|---------|
+| `BTCPAY_BITCOIND_PASSWORD` | bitcoind RPC auth (`btcpay-chain-2026`) |
+| `PLATFORM_DB_PASSWORD` | postgres for crypto_key_server DB |
+| `SERVICE_KEY` | product auth for key server |
+| `ADMIN_TOKEN` | admin route auth for key server |
+| `DOGE_RPC_PASSWORD` | dogecoind RPC auth (`doge-chain-2026`) |
+| `LTC_RPC_PASSWORD` | litecoind RPC auth (`ltc-chain-2026`) |
+
+---
+
 ## 2026-03-18 — NemoClaw Platform Production
 
 ### What shipped

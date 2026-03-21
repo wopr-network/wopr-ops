@@ -116,9 +116,33 @@ services:
       - "3100:3100"
     restart: unless-stopped
 
+  dogecoind:
+    image: blocknetdx/dogecoin:latest
+    container_name: chain-dogecoind
+    command: >
+      dogecoind
+        -server=1
+        -rpcuser=doge
+        -rpcpassword=${DOGE_RPC_PASSWORD}
+        -rpcallowip=0.0.0.0/0
+        -rpcbind=0.0.0.0
+        -rpcport=22555
+        -prune=2200
+        -printtoconsole=1
+        -maxconnections=24
+        -addnode=seed.multidoge.org
+        -addnode=seed2.multidoge.org
+        -addnode=seed.dogecoin.com
+    ports:
+      - "22555:22555"
+    volumes:
+      - doge_data:/home/dogecoin/.dogecoin
+    restart: unless-stopped
+
 volumes:
   bitcoin_data:
   postgres_data:
+  doge_data:
 
 networks:
   default:

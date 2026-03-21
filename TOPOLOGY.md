@@ -39,13 +39,16 @@ Four products on shared infrastructure. Same GPUs, same platform-core, same cred
 ## Shared Infrastructure
 
 ```
-platform-core (npm package — v1.42.1+)
+platform-core (npm package — v1.44.0)
     ├── BetterAuth (sessions, signup, login, GitHub OAuth)
     ├── Double-entry credit ledger (journal_entries + journal_lines + account_balances)
     │    ├── Credits are nanodollars, integer math only
     │    ├── $5 signup grant via grantSignupCredits()
     │    ├── debitCapped() for budget-limited operations
-    │    └── Stripe + BTC crypto checkout (native watcher → shared chain server at pay.wopr.bot)
+    │    └── Stripe + crypto checkout (CryptoServiceClient → key server at pay.wopr.bot:3100)
+    │         ├── BTC, DOGE, LTC (native UTXO), 9 EVM tokens on Base
+    │         ├── Chainlink oracle locks rate at charge creation
+    │         └── Partial payments + webhook outbox with durable retry
     ├── Tenant types: personal, org, platform_service
     │    └── platform_service bypasses credit gate (company pays, ledger still tracks)
     ├── FleetManager (Docker container lifecycle)
@@ -342,24 +345,74 @@ User buys credits (Stripe checkout)
 
 ## Chain Server (pay.wopr.bot)
 
-Dedicated Bitcoin chain server shared by all 4 products. Replaces per-product BTCPay stacks.
+Centralized crypto payment service shared by all 4 products. Replaces per-product BTCPay stacks entirely.
 
 ```
-Chain Server (DO sfo2, s-2vcpu-4gb, $24/mo → resize to $12/mo after sync)
+Chain Server (DO sfo2, s-2vcpu-4gb, 80GB disk, $24/mo)
   IP: 167.71.118.221
   Private IP: 10.120.0.5
   Hostname: pay.wopr.bot
+  Attached volume: ltc-sync (100GB, /mnt/ltc_sync) — temporary for LTC sync, $10/mo
   └─ docker-compose.yml (/opt/chain-server/)
-       └─ bitcoind only (mainnet, pruned 5GB, port 8332)
-            ├─ Syncing via assumeutxo snapshot (block 910,000 — torrent)
-            ├─ Products connect via RPC at pay.wopr.bot:8332
-            ├─ DO Cloud Firewall (chain-server-fw):
-            │    ├─ SSH: admin IP only
-            │    └─ TCP 8332: product VPS IPs only (10.120.0.x range)
-            └─ After sync: resize to s-1vcpu-2gb ($12/mo)
+       ├─ crypto-key-server          (port 3100 — ghcr.io/wopr-network/crypto-key-server:latest)
+       │    ├─ Hono HTTP — 7 API endpoints
+       │    │    ├─ GET  /chains          — list enabled payment methods
+       │    │    ├─ POST /address         — derive next HD address (BIP-44)
+       │    │    ├─ POST /charges         — create charge (oracle locks exchange rate)
+       │    │    ├─ GET  /charges/:id     — check charge status
+       │    │    ├─ GET  /admin/next-path — available derivation path
+       │    │    ├─ PUT  /admin/chains    — register/update payment method
+       │    │    └─ DELETE /admin/chains/:id — disable payment method
+       │    ├─ Auth: Bearer service key (products) / admin token (path registration)
+       │    ├─ Chainlink on-chain oracle (Base mainnet) for BTC/ETH/DOGE/LTC prices
+       │    ├─ Native amount tracking — expectedAmount locked in sats/token units at charge creation
+       │    ├─ Partial payment accumulation — BigInt math, webhook on every payment
+       │    ├─ Webhook outbox — durable delivery with exponential backoff (10 max retries)
+       │    ├─ SSRF protection — callbackUrl validated, internal IPs blocked
+       │    └─ Watcher service — boots UTXO watchers (BTC/DOGE/LTC) + EVM watchers from DB
+       │
+       ├─ bitcoind                   (port 8332 — btcpayserver/bitcoin:30.2)
+       │    ├─ Mainnet, pruned 5GB, ~26GB on disk
+       │    ├─ Custom wrapper entrypoint (bypasses BTCPay entrypoint bugs)
+       │    └─ Volume: chain-server_bitcoin_data (Docker managed)
+       │
+       ├─ dogecoind                  (port 22555 — blocknetdx/dogecoin:latest)
+       │    ├─ Mainnet, pruned 2200MB, ~4GB on disk (rebuilding chainstate)
+       │    ├─ Custom wrapper entrypoint (writes config, execs dogecoind directly)
+       │    ├─ Seed nodes by IP (hostnames don't resolve inside container)
+       │    ├─ Blocks pre-loaded from ghcr.io/wopr-network/doge-chaindata:latest
+       │    └─ Volume: doge_data (external, Docker managed)
+       │
+       ├─ litecoind                  (port 9332 — uphold/litecoin-core:latest)
+       │    ├─ Mainnet, pruned 2200MB, syncing from peers (~90GB download → ~3GB pruned)
+       │    ├─ Custom wrapper entrypoint (same pattern as BTC/DOGE)
+       │    ├─ Data on attached volume: /mnt/ltc_sync (100GB DO block storage)
+       │    ├─ After sync: move pruned data to main disk, detach volume
+       │    └─ DNS seeds work natively (uphold image has proper DNS)
+       │
+       ├─ postgres:16-alpine        (5432 — internal, DB: crypto_key_server)
+       │    └─ Tables: payment_methods, crypto_charges, path_allocations,
+       │              derived_addresses, webhook_deliveries
+       │
+       └─ DO Cloud Firewall (chain-server-fw):
+            ├─ SSH: admin IP only
+            ├─ TCP 3100: VPC + product VPS IPs
+            └─ TCP 8332/22555/9332: product VPS IPs only
+
+Products call: POST https://pay.wopr.bot:3100/charges → receive webhook callbacks
+  Env vars per product:
+    CRYPTO_SERVICE_URL=http://pay.wopr.bot:3100
+    CRYPTO_WEBHOOK_URL=https://api.{product}/billing/crypto/webhook
+
+All nodes use wrapper entrypoint pattern:
+  entrypoint: ["/opt/wrapper.sh"]  +  volumes: ./XXX-wrapper.sh:/opt/wrapper.sh:ro
+  Wrapper writes config, execs daemon. No reliance on image defaults.
 ```
 
-BTCPay, nbxplorer: removed entirely. platform-core's native BTC watcher uses bitcoind RPC directly.
+4 xpubs registered: BTC (m/44'/0'/0'), EVM (m/44'/60'/0'), DOGE (m/44'/3'/0'), LTC (m/44'/2'/0').
+12 payment methods seeded: BTC, DOGE, LTC, 9 EVM tokens on Base (USDC, USDT, DAI, etc.).
+
+BTCPay, nbxplorer: removed entirely from platform-core v1.44.0. CryptoServiceClient replaces BTCPayClient.
 
 ## Shared Dependencies
 
