@@ -4,9 +4,9 @@
 
 ## Current State
 
-**Status:** PRODUCTION — wopr.bot live on DO droplet 206.189.173.166; nemopod.com live on DO droplet 159.89.140.143
-**Last Updated:** 2026-03-18
-**Last Operation:** NemoClaw full production deployment — Stripe webhook + credits verified, inference gateway wired, DNS wildcard set, CI/CD green, auto-deploy live.
+**Status:** PRODUCTION — all 4 products live, chain server syncing LTC (~44%), DOGE stopped, BTC synced + watcher active
+**Last Updated:** 2026-03-22
+**Last Operation:** Crypto key server deployed with PRs #120-#125 (microdollar pricing, CoinGecko, native ETH watcher, DB-driven EVM config, Drizzle error fix). BTC watcher 401 fixed (wallet + credentials). First e2e payment processed (LINK on Sepolia). wopr-platform-ui #468 merged (platform-ui-core v1.18.0).
 
 ## 2026-03-21 — Crypto Key Server + DOGE Node Deployment
 
@@ -18,38 +18,44 @@
 ### Chain Server Operations
 
 ```bash
-# SSH to chain server
-ssh root@pay.wopr.bot  # 167.71.118.221
+# SSH to chain server (use direct IP — DNS slow under CPU load)
+ssh root@167.71.118.221
 
 # Check crypto key server
-curl http://pay.wopr.bot:3100/chains
+curl http://167.71.118.221:3100/chains
 
 # Check bitcoind sync
-ssh root@pay.wopr.bot 'docker exec chain-server-bitcoind-1 bitcoin-cli -rpcuser=btcpay -rpcpassword=$(grep BTCPAY_BITCOIND_PASSWORD /opt/chain-server/.env | cut -d= -f2) getblockchaininfo'
+ssh root@167.71.118.221 'docker exec chain-server-bitcoind-1 bitcoin-cli -rpcuser=btcpay -rpcpassword=btcpay-chain-2026 getblockchaininfo'
 
-# Check dogecoind
-ssh root@pay.wopr.bot 'docker exec chain-dogecoind dogecoin-cli -rpcuser=doge -rpcpassword=doge-chain-2026 getblockchaininfo'
+# Check dogecoind (all nodes use rpcuser=btcpay, standardized 2026-03-22)
+ssh root@167.71.118.221 'docker exec chain-dogecoind dogecoin-cli -rpcuser=btcpay -rpcpassword=btcpay-chain-2026 getblockchaininfo'
 
 # Check litecoind
-ssh root@pay.wopr.bot 'docker exec chain-litecoind litecoin-cli -rpcuser=ltc -rpcpassword=ltc-chain-2026 getblockchaininfo'
+ssh root@167.71.118.221 'docker exec chain-litecoind litecoin-cli -rpcuser=btcpay -rpcpassword=btcpay-chain-2026 getblockchaininfo'
 
 # Check all 3 chains at once
-ssh root@pay.wopr.bot 'for c in "chain-server-bitcoind-1 bitcoin-cli -rpcuser=btcpay -rpcpassword=btcpay-chain-2026" "chain-dogecoind dogecoin-cli -rpcuser=doge -rpcpassword=doge-chain-2026" "chain-litecoind litecoin-cli -rpcuser=ltc -rpcpassword=ltc-chain-2026"; do set -- $c; echo "=== $1 ==="; docker exec $@ getblockchaininfo 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(f\"blocks={d[\"blocks\"]} progress={d[\"verificationprogress\"]:.4f} pruned={d[\"pruned\"]} conn={d.get(\"connections\",0)}\")" 2>/dev/null || echo "not ready"; done'
+ssh root@167.71.118.221 'for c in "chain-server-bitcoind-1 bitcoin-cli" "chain-dogecoind dogecoin-cli" "chain-litecoind litecoin-cli"; do set -- $c; echo "=== $1 ==="; docker exec $@ -rpcuser=btcpay -rpcpassword=btcpay-chain-2026 getblockchaininfo 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(f\"blocks={d[\"blocks\"]} progress={d[\"verificationprogress\"]:.4f} pruned={d[\"pruned\"]} conn={d.get(\"connections\",0)}\")" 2>/dev/null || echo "not ready"; done'
 
-# Restart crypto key server
-ssh root@pay.wopr.bot 'cd /opt/chain-server && docker compose restart crypto'
+# Deploy new key server image (after PR merge → GHCR build)
+ssh root@167.71.118.221 'docker pull ghcr.io/wopr-network/crypto-key-server:latest && cd /opt/chain-server && docker compose up -d crypto'
+
+# Restart crypto key server (without pulling new image)
+ssh root@167.71.118.221 'cd /opt/chain-server && docker compose restart crypto'
 
 # Restart all chain services
-ssh root@pay.wopr.bot 'cd /opt/chain-server && docker compose --env-file .env up -d'
+ssh root@167.71.118.221 'cd /opt/chain-server && docker compose --env-file .env up -d'
 
 # View webhook delivery failures
-ssh root@pay.wopr.bot 'docker exec chain-postgres psql -U platform crypto_key_server -c "SELECT charge_id, status, attempts, last_error FROM webhook_deliveries WHERE status = '\''failed'\''"'
+ssh root@167.71.118.221 'docker exec chain-postgres psql -U platform crypto_key_server -c "SELECT charge_id, status, attempts, last_error FROM webhook_deliveries WHERE status = '\''failed'\''"'
+
+# Check payment methods and derivation state
+ssh root@167.71.118.221 'docker exec chain-postgres psql -U platform crypto_key_server -c "SELECT id, chain, address_type, next_index FROM payment_methods ORDER BY id"'
 
 # Re-add DOGE peers (drop after restart — hostnames don't resolve in container)
-ssh root@pay.wopr.bot 'for ip in 173.212.197.63 34.50.85.108 138.201.132.34 142.132.213.251 176.9.54.92 94.130.71.31 23.88.0.168 37.27.229.59; do docker exec chain-dogecoind dogecoin-cli -rpcuser=doge -rpcpassword=doge-chain-2026 addnode "$ip" "onetry"; done'
+ssh root@167.71.118.221 'for ip in 173.212.197.63 34.50.85.108 138.201.132.34 142.132.213.251; do docker exec chain-dogecoind dogecoin-cli -rpcuser=btcpay -rpcpassword=btcpay-chain-2026 addnode "$ip" "onetry"; done'
 
 # Fix DNS on chain server (reverts after reboot)
-ssh root@pay.wopr.bot 'echo "nameserver 1.1.1.1" > /etc/resolv.conf; echo "nameserver 8.8.8.8" >> /etc/resolv.conf'
+ssh root@167.71.118.221 'echo "nameserver 1.1.1.1" > /etc/resolv.conf; echo "nameserver 8.8.8.8" >> /etc/resolv.conf'
 ```
 
 ### LTC Sync Volume (temporary)
@@ -103,6 +109,81 @@ docker rm doge-tmp && docker rmi ghcr.io/wopr-network/doge-chaindata:latest
 | `ADMIN_TOKEN` | admin route auth for key server |
 | `DOGE_RPC_PASSWORD` | dogecoind RPC auth (`doge-chain-2026`) |
 | `LTC_RPC_PASSWORD` | litecoind RPC auth (`ltc-chain-2026`) |
+
+---
+
+## Monitoring (Netdata)
+
+### Access
+
+- **Dashboard:** https://app.netdata.cloud (WOPR Infrastructure space, Production room)
+- **SSH tunnel fallback:** `ssh -L 19999:localhost:19999 root@<IP>` then http://localhost:19999
+
+### Nodes
+
+| Node | IP | Containers |
+|------|-----|------------|
+| chain-server | 167.71.118.221 (pay.wopr.bot) | btc, doge, ltc, postgres, crypto, netdata |
+| wopr-platform | 138.68.30.247 | api, ui, caddy, postgres, netdata |
+| holyship | 138.68.46.192 | api, ui, caddy, postgres, netdata |
+| nemoclaw | 167.172.208.149 | api, ui, caddy, postgres, netdata |
+
+### Netdata Compose (all nodes)
+
+Each node runs Netdata from `/tmp/netdata-compose.yml` with `network_mode: host`, Docker socket access, and Netdata Cloud claim token. Started independently from the product compose.
+
+```bash
+# Restart netdata on any node
+ssh root@<IP> 'docker restart netdata'
+
+# Check netdata health
+ssh root@<IP> 'docker logs netdata --tail 5'
+```
+
+### Custom Chain Metrics (chain server only)
+
+**Systemd service:** `chain-monitor.service` on host, pushes to Netdata statsd (UDP 8125).
+**Script:** `/opt/chain-server/chain-monitor.sh`
+**State file:** `/opt/chain-server/.chain-monitor-state` (persists across restarts)
+**Statsd config:** `/etc/netdata/statsd.d/chain.conf` (inside netdata container)
+
+Charts:
+- `chain_btc_sync` — BTC blocks vs headers (2 lines)
+- `chain_ltc_sync` — LTC blocks vs headers (2 lines)
+- `chain_doge_sync` — DOGE blocks vs headers (2 lines)
+- `chain_progress` — all chains sync % + BTC validation (4 lines)
+- `chain_btc_validation` — BTC background IBD progress vs target (2 lines)
+- `chain_eta` — estimated time to sync in minutes (3 lines)
+- `chain_sync_rate` — blocks/sec for LTC and DOGE (2 lines)
+
+```bash
+# Restart chain monitor
+ssh root@pay.wopr.bot 'systemctl restart chain-monitor'
+
+# Check state
+ssh root@pay.wopr.bot 'cat /opt/chain-server/.chain-monitor-state'
+
+# Update statsd config (edit locally, scp, restart)
+scp /tmp/chain.conf root@pay.wopr.bot:/tmp/chain.conf
+ssh root@pay.wopr.bot 'docker cp /tmp/chain.conf netdata:/etc/netdata/statsd.d/chain.conf && docker restart netdata'
+```
+
+### Gotchas
+- Netdata runs with `network_mode: host` — no port mapping, listens on host 19999
+- Chain monitor parses `docker logs --tail 200 | grep UpdateTip` — no RPC (too slow under load)
+- BTC logs include `[background validation] UpdateTip` lines — must `grep -v "background validation"` to get tip blocks
+- ETA uses exponential moving average (alpha=0.1) with spike filter (>5x EMA discarded)
+- State file persists EMA rates across restarts — delete it to reset smoothing
+- `docker restart netdata` wipes in-memory statsd — charts refill within 10 seconds from monitor
+- Wiping `/var/cache/netdata/dbengine/` resets ALL historical data — use with caution
+
+### Nemoclaw Resize (2026-03-21)
+
+Reprovisioned nemoclaw from s-2vcpu-4gb ($24/mo) to s-1vcpu-1gb ($6/mo). Old droplet 159.89.140.143 destroyed. New droplet 167.172.208.149. BTCPay/bitcoind/nbxplorer removed. DNS updated. Savings: $18/mo.
+
+### Holyship BTCPay Cleanup (2026-03-21)
+
+Removed bitcoind + btcpay + nbxplorer from holyship compose. Was using 406MB RAM and 13% CPU on a 1GB box. Now 5 containers (api, ui, caddy, postgres, netdata).
 
 ---
 

@@ -197,3 +197,82 @@ volumes:
 - The chain server has the CPU/RAM to sync while running other services
 
 **Tradeoff:** No GHCR backup for LTC blocks. If the chain server dies, LTC re-syncs from peers (~24hrs). Acceptable for a pruned node.
+
+---
+
+## 2026-03-21 — Netdata for infrastructure monitoring
+
+**Context:** 4 production droplets with zero monitoring. Chain server running 3 chains at 5x load average with no visibility. Using a Claude Code cron that SSHes in every 30 minutes — inadequate.
+
+**Decision:** Netdata — open source, self-hosted, zero-config Docker monitoring. One container per droplet, all streaming to Netdata Cloud (free tier, 5 nodes). Custom chain sync metrics via host-side systemd service pushing to statsd.
+
+**Why Netdata over Grafana/Prometheus:**
+- Zero config — auto-discovers all Docker containers, host metrics, disk, network
+- Single container deploy — `netdata/netdata:stable` with `network_mode: host`
+- Free cloud dashboard — single pane of glass for all 4 nodes, no self-hosted Grafana
+- <5% CPU, ~100MB RAM — lightweight enough for $6 droplets
+
+**Chain metrics architecture:**
+- `chain-monitor.service` runs on chain server host (not inside Netdata container — no Docker CLI in Netdata image)
+- Parses `docker logs --tail 200 | grep UpdateTip` — no RPC calls (too slow under CPU load, timeouts cause false zeros)
+- Must `grep -v "background validation"` for BTC (assumeutxo logs both tip and background chainstate)
+- Pushes to Netdata statsd on localhost:8125 (UDP)
+- Statsd app config (`chain.conf`) groups raw gauges into multi-dimension charts (blocks vs headers on same chart)
+- ETA uses exponential moving average (alpha=0.1) with spike filter (>5x EMA discarded, downward corrections always accepted)
+- State persisted to `/opt/chain-server/.chain-monitor-state` — survives restarts without 0-blip
+
+**Lessons learned:**
+- `netdata/netdata` container has no `docker` CLI — can't `docker exec` from inside. Run collectors on the host.
+- Statsd gauges that receive 0 on timeout show 0 in charts — must use last-known-value pattern
+- Wiping `/var/cache/netdata/dbengine/` resets ALL history — charts disappear until data refills
+- BTC background validation moves so slowly (~0.05 basis points/sec at 50% CPU cap) that ETA is unreliable — keep it on the chart but don't trust the number
+
+---
+
+## 2026-03-21 — Nemoclaw reprovisioned at s-1vcpu-1gb ($6/mo)
+
+**Context:** Nemoclaw was running on s-2vcpu-4gb ($24/mo) with bitcoind + BTCPay + nbxplorer — all dead weight since the chain server handles crypto. Couldn't resize in place because DO won't shrink disks.
+
+**Decision:** Nuke and reprovision. New droplet at s-1vcpu-1gb ($6/mo), scp .env from old, write clean compose (no BTCPay), update DNS, destroy old droplet.
+
+**Result:** $18/mo saved. 4 containers instead of 7. Same for holyship — removed BTCPay stack (was using 406MB RAM on a 1GB box).
+
+---
+
+## 2026-03-21 — Sequential chain syncing, not parallel
+
+**Context:** Running BTC (background validation) + DOGE + LTC simultaneously on 2 cores pegged the machine at 5x load average. DOGE stalled completely — lost peers, RPC unresponsive, no new blocks for 15+ minutes.
+
+**Decision:** Sync one chain at a time. Stopped DOGE, capped BTC at 50% CPU (`docker update --cpus=0.5`), let LTC have the remaining resources. After LTC syncs, start DOGE. After DOGE syncs, uncap BTC.
+
+**Why:** 2 cores can't serve 3 CPU-intensive chain syncs. Nodes that lose peers and stall waste more time than sequential syncing.
+
+---
+
+## 2026-03-22 — Standardized UTXO RPC credentials
+
+**Context:** BTC used `btcpay:btcpay-chain-2026`, DOGE used `doge:doge-chain-2026`, LTC used `ltc:ltc-chain-2026`. The crypto key server's watcher passes one global `bitcoindUser`/`bitcoindPassword` to all UTXO watchers — can't use different creds per chain.
+
+**Decision:** Standardized all 3 nodes to `rpcuser=btcpay` with the same password. Updated wrapper scripts and `.env`.
+
+**Follow-up:** Proper fix is per-chain RPC credentials stored in `payment_methods` table. Deferred — single cred works for now.
+
+---
+
+## 2026-03-22 — DB-driven EVM watcher config
+
+**Context:** `EvmWatcher` and `EthWatcher` called `getChainConfig()` which only knew `base`, `ethereum`, `arbitrum`, `polygon`. Adding Sepolia for testnet e2e required code changes. The `payment_methods` table already has `rpc_url`, `confirmations`, `decimals`, `contract_address`.
+
+**Decision:** Watchers now take config from opts (sourced from DB), not hardcoded chain registry. `EvmChain` type accepts any string via `(string & {})`. Any chain registered in the DB works without code changes.
+
+**Result:** Registered `LINK:sepolia` and `ETH:base-sepolia` via SQL insert — watchers picked them up on restart with zero code changes. First e2e crypto payment processed (LINK on Sepolia → settled → webhook delivered).
+
+---
+
+## 2026-03-22 — Microdollar oracle pricing (10⁻⁶ USD)
+
+**Context:** DOGE at $0.094 rounded to 9 cents (6% error). Cents don't have enough precision for sub-dollar coins.
+
+**Decision:** Entire oracle pipeline migrated from cents to microdollars (10⁻⁶ USD). DOGE $0.094 = 94,147 microdollars. `priceCents` → `priceMicros` across all interfaces. Bridge constant `MICROS_PER_CENT = 10,000` for conversion.
+
+**Result:** Sub-cent pricing accurate to 6 decimal places. CoinGecko fallback for DOGE/LTC (no Chainlink feeds on Base). CompositeOracle: Chainlink primary → CoinGecko fallback. `AssetNotSupportedError` distinguishes unknown assets (stablecoin 1:1) from transient failures (503 reject).

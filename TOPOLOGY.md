@@ -39,15 +39,17 @@ Four products on shared infrastructure. Same GPUs, same platform-core, same cred
 ## Shared Infrastructure
 
 ```
-platform-core (npm package — v1.44.0)
+platform-core (npm package — v1.50+)
     ├── BetterAuth (sessions, signup, login, GitHub OAuth)
     ├── Double-entry credit ledger (journal_entries + journal_lines + account_balances)
     │    ├── Credits are nanodollars, integer math only
     │    ├── $5 signup grant via grantSignupCredits()
     │    ├── debitCapped() for budget-limited operations
     │    └── Stripe + crypto checkout (CryptoServiceClient → key server at pay.wopr.bot:3100)
-    │         ├── BTC, DOGE, LTC (native UTXO), 9 EVM tokens on Base
-    │         ├── Chainlink oracle locks rate at charge creation
+    │         ├── BTC, DOGE, LTC (UTXO), ETH + 9 ERC20 tokens on Base
+    │         ├── CompositeOracle: Chainlink (BTC/ETH) → CoinGecko fallback (DOGE/LTC)
+    │         ├── Microdollar precision (10⁻⁶ USD), DB-driven EVM watchers
+    │         ├── address_type routing: bech32/p2pkh/evm, shared-xpub collision retry
     │         └── Partial payments + webhook outbox with durable retry
     ├── Tenant types: personal, org, platform_service
     │    └── platform_service bypasses credit gate (company pays, ledger still tracks)
@@ -290,12 +292,12 @@ One-click NVIDIA NemoClaw deployment. Each tenant gets their own NemoClaw contai
 ```
 Internet
   └─ Cloudflare DNS
-       ├─ nemopod.com          → 159.89.140.143
-       ├─ api.nemopod.com      → 159.89.140.143
-       ├─ app.nemopod.com      → 159.89.140.143
-       └─ *.nemopod.com        → 159.89.140.143 (tenant subdomains)
+       ├─ nemopod.com          → 167.172.208.149
+       ├─ api.nemopod.com      → 167.172.208.149
+       ├─ app.nemopod.com      → 167.172.208.149
+       └─ *.nemopod.com        → 167.172.208.149 (tenant subdomains)
 
-Production VPS (DigitalOcean — 159.89.140.143)
+Production VPS (DigitalOcean — 167.172.208.149)
   └─ docker-compose.yml
        ├─ caddy:2-alpine                (80, 443 — auto-TLS)
        │    ├─ nemopod.com        → marketing / UI

@@ -1,12 +1,16 @@
 #!/bin/bash
 # Shared Chain Server — DigitalOcean cloud-init script
 #
-# Provisions a dedicated Bitcoin node serving all 4 products:
+# Provisions a multi-chain crypto payment server for all 4 products:
 #   - bitcoind (mainnet, pruned)
+#   - dogecoind (mainnet, pruned)
+#   - litecoind (mainnet, pruned)
+#   - crypto-key-server (address derivation, charge management, watchers)
+#   - postgres (charge DB, payment methods, derived addresses)
 #   - 5GB swap, Docker CE + Compose
 #
-# Products connect via DO private networking:
-#   holyship, wopr-platform, paperclip-platform, nemoclaw-platform
+# All UTXO nodes use standardized RPC credentials (user: btcpay).
+# Products connect via DO private networking or public IP:3100.
 #
 # Usage:
 #   cd wopr-ops && bash vps/chain-server/provision.sh
@@ -57,7 +61,7 @@ cat > /data/bitcoin.conf << CONFEOF
 [main]
 server=1
 rpcuser=btcpay
-rpcpassword=${BTCPAY_BITCOIND_PASSWORD:-changeme}
+rpcpassword=${BTCPAY_BITCOIND_PASSWORD:-btcpay-chain-2026}
 rpcallowip=0.0.0.0/0
 rpcallowip=::/0
 rpcbind=0.0.0.0
@@ -70,6 +74,51 @@ chown bitcoin:bitcoin /data/bitcoin.conf /data/wallets/mainnet
 exec gosu bitcoin bitcoind -datadir=/data
 WRAPEOF
 chmod +x /opt/chain-server/bitcoind-wrapper.sh
+
+# --- dogecoind wrapper ---
+cat > /opt/chain-server/dogecoind-wrapper.sh << 'WRAPEOF'
+#!/bin/bash
+set -e
+cat > /home/dogecoin/.dogecoin/dogecoin.conf << CONFEOF
+server=1
+rpcuser=btcpay
+rpcpassword=${DOGE_RPC_PASSWORD:-btcpay-chain-2026}
+rpcallowip=0.0.0.0/0
+rpcbind=0.0.0.0
+rpcport=22555
+prune=2200
+printtoconsole=1
+maxconnections=24
+txindex=0
+addnode=173.212.197.63
+addnode=34.50.85.108
+addnode=138.201.132.34
+addnode=142.132.213.251
+CONFEOF
+exec dogecoind -datadir=/home/dogecoin/.dogecoin -conf=/home/dogecoin/.dogecoin/dogecoin.conf
+WRAPEOF
+chmod +x /opt/chain-server/dogecoind-wrapper.sh
+
+# --- litecoind wrapper ---
+cat > /opt/chain-server/litecoind-wrapper.sh << 'WRAPEOF'
+#!/bin/bash
+set -e
+mkdir -p /data/.litecoin
+cat > /data/.litecoin/litecoin.conf << CONFEOF
+server=1
+rpcuser=btcpay
+rpcpassword=${LTC_RPC_PASSWORD:-btcpay-chain-2026}
+rpcallowip=0.0.0.0/0
+rpcbind=0.0.0.0
+rpcport=9332
+prune=2200
+printtoconsole=1
+maxconnections=24
+txindex=0
+CONFEOF
+exec litecoind -datadir=/data/.litecoin
+WRAPEOF
+chmod +x /opt/chain-server/litecoind-wrapper.sh
 
 # --- docker-compose.yml ---
 cat > /opt/chain-server/docker-compose.yml << 'COMPOSEEOF'
@@ -111,7 +160,9 @@ services:
     environment:
       DATABASE_URL: postgresql://platform:${PLATFORM_DB_PASSWORD}@postgres:5432/crypto_key_server
       PORT: "3100"
+      SERVICE_KEY: ${SERVICE_KEY}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
+      BITCOIND_PASSWORD: ${BTCPAY_BITCOIND_PASSWORD}
     ports:
       - "3100:3100"
     restart: unless-stopped
@@ -119,30 +170,35 @@ services:
   dogecoind:
     image: blocknetdx/dogecoin:latest
     container_name: chain-dogecoind
-    command: >
-      dogecoind
-        -server=1
-        -rpcuser=doge
-        -rpcpassword=${DOGE_RPC_PASSWORD}
-        -rpcallowip=0.0.0.0/0
-        -rpcbind=0.0.0.0
-        -rpcport=22555
-        -prune=2200
-        -printtoconsole=1
-        -maxconnections=24
-        -addnode=seed.multidoge.org
-        -addnode=seed2.multidoge.org
-        -addnode=seed.dogecoin.com
+    entrypoint: ["/opt/wrapper.sh"]
     ports:
       - "22555:22555"
+    environment:
+      - DOGE_RPC_PASSWORD=${DOGE_RPC_PASSWORD}
     volumes:
       - doge_data:/home/dogecoin/.dogecoin
+      - ./dogecoind-wrapper.sh:/opt/wrapper.sh:ro
+    restart: unless-stopped
+
+  litecoind:
+    image: uphold/litecoin-core:latest
+    container_name: chain-litecoind
+    entrypoint: ["/opt/wrapper.sh"]
+    ports:
+      - "9332:9332"
+    environment:
+      - LTC_RPC_PASSWORD=${LTC_RPC_PASSWORD}
+    volumes:
+      - ltc_data:/data
+      - ./litecoind-wrapper.sh:/opt/wrapper.sh:ro
     restart: unless-stopped
 
 volumes:
   bitcoin_data:
   postgres_data:
   doge_data:
+    external: true
+  ltc_data:
 
 networks:
   default:
