@@ -142,7 +142,7 @@ services:
       - COOKIE_DOMAIN=.runpaperclip.com
       - PLATFORM_SECRET=${PLATFORM_SECRET}
       - PLATFORM_ENCRYPTION_SECRET=${PLATFORM_ENCRYPTION_SECRET}
-      - PAPERCLIP_BOT_IMAGE=ghcr.io/wopr-network/paperclip:latest
+      - PAPERCLIP_IMAGE=ghcr.io/wopr-network/paperclip:managed
       - DO_API_TOKEN=${DO_API_TOKEN}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - CRYPTO_SERVICE_URL=${CRYPTO_SERVICE_URL:-http://167.71.118.221:3100}
