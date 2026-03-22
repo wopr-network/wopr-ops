@@ -60,6 +60,7 @@ services:
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
       BETTER_AUTH_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-.holyship.wtf}
       UI_ORIGIN: ${UI_ORIGIN:-https://holyship.wtf}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
@@ -110,6 +111,9 @@ services:
         condition: service_healthy
     environment:
       API_INTERNAL_URL: http://api:3001
+      HOLYSHIP_API_URL: http://api:3001
+      HOLYSHIP_API_TOKEN: ${HOLYSHIP_WORKER_TOKEN}
+      NEXT_PUBLIC_HOLYSHIP_WS_URL: ${NEXT_PUBLIC_HOLYSHIP_WS_URL:-wss://api.holyship.wtf}
     expose:
       - "3000"
     ports:
