@@ -48,14 +48,9 @@ chown deploy:deploy /home/deploy/.ssh/id_ed25519 /home/deploy/.ssh/id_ed25519.pu
 mkdir -p /opt/paperclip-platform/caddy
 chown -R deploy:deploy /opt/paperclip-platform
 
-# --- Caddy Dockerfile (with Cloudflare DNS plugin) ---
-cat > /opt/paperclip-platform/caddy/Dockerfile << 'CADDYEOF'
-FROM caddy:2-builder AS builder
-RUN xcaddy build --with github.com/caddy-dns/cloudflare
-
-FROM caddy:2-alpine
-COPY --from=builder /usr/bin/caddy /usr/bin/caddy
-CADDYEOF
+# --- Caddy Dockerfile removed ---
+# Pre-built image at ghcr.io/wopr-network/paperclip-caddy:latest
+# (Go compilation OOMs on 1GB droplets — build locally, push to GHCR)
 
 # --- Caddyfile ---
 cat > /opt/paperclip-platform/Caddyfile << 'CADDYFILEEOF'
@@ -73,11 +68,11 @@ app.runpaperclip.com {
 }
 
 api.runpaperclip.com {
-	reverse_proxy platform-api:3100
+	reverse_proxy platform-api:3200
 }
 
 *.runpaperclip.com {
-	reverse_proxy platform-api:3100
+	reverse_proxy platform-api:3200
 }
 CADDYFILEEOF
 
@@ -100,9 +95,7 @@ services:
     restart: unless-stopped
 
   caddy:
-    build:
-      context: ./caddy
-      dockerfile: Dockerfile
+    image: ghcr.io/wopr-network/paperclip-caddy:latest
     ports:
       - "80:80"
       - "443:443"
@@ -155,12 +148,14 @@ services:
       - CRYPTO_SERVICE_URL=${CRYPTO_SERVICE_URL:-http://167.71.118.221:3100}
       - TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS:-172.16.0.0/12}
       - FLEET_API_TOKEN=${FLEET_API_TOKEN:-paperclip_fleet_default}
+      - PROVISION_SECRET=${PROVISION_SECRET}
+      - GATEWAY_URL=${GATEWAY_URL}
       - REGISTRY_USERNAME=wopr-network
       - REGISTRY_PASSWORD=${GHCR_TOKEN}
       - REGISTRY_SERVER=ghcr.io
       - NODE_ENV=production
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3200/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -230,9 +225,9 @@ docker run -d --name=netdata \
   -e NETDATA_CLAIM_ROOMS="$(grep NETDATA_CLAIM_ROOMS /opt/paperclip-platform/.env | cut -d= -f2)" \
   netdata/netdata:stable
 
-# --- Pull images and start ---
+# --- Pull images and start (caddy pulled separately — no build needed) ---
 cd /opt/paperclip-platform
-docker compose --env-file .env pull platform-api platform-ui postgres 2>/dev/null || true
+docker compose --env-file .env pull 2>/dev/null || true
 docker compose --env-file .env up -d
 
 # --- Signal completion ---
