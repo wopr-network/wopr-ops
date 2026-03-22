@@ -369,3 +369,43 @@ volumes:
 **Decision:** The `/internal/*` routes must be explicitly mounted in `app.ts`. They are not auto-discovered because they live outside the standard route directory structure. This is by design — internal routes should be deliberately opt-in.
 
 **Result:** Route wired manually in app.ts. Documented as a gotcha for future internal endpoints.
+
+---
+
+## 2026-03-22 — Holy Ship: COOKIE_DOMAIN for cross-subdomain OAuth
+
+**Context:** GitHub OAuth callback lands on `api.holyship.wtf` which sets the session cookie. The UI at `holyship.wtf` couldn't read it because cookies default to the exact domain that set them.
+
+**Decision:** Set `COOKIE_DOMAIN=.holyship.wtf` on the API container. The leading dot makes cookies readable by all subdomains. Same pattern as Paperclip's `COOKIE_DOMAIN=.runpaperclip.com`.
+
+**Result:** Single OAuth flow: UI → GitHub → API callback → cookie set → UI reads session. No double-login needed.
+
+---
+
+## 2026-03-22 — Holy Ship: Auth client must override baseURL, not inherit from core
+
+**Context:** `platform-ui-core` exports an auth client that reads `NEXT_PUBLIC_API_URL` at build time. But Next.js standalone builds don't trace `NEXT_PUBLIC_*` vars through `node_modules` — the var was undefined in the client bundle, causing auth calls to hit the UI origin instead of the API.
+
+**Decision:** `holyship-ui` overrides the auth client (`src/lib/auth-client.ts`) with an explicit `baseURL` hardcoded to the env var. This is a thin override — 10 lines, re-exports everything from the local client.
+
+**Result:** Auth calls correctly target `api.holyship.wtf` regardless of how Next.js traces env vars through the dependency graph. This applies to any brand shell built on platform-ui-core.
+
+---
+
+## 2026-03-22 — Holy Ship: Worker token not admin token for UI → engine API
+
+**Context:** The UI needs to call engine REST endpoints (`/api/status`, `/api/flows`, `/api/entities`). Engine routes authenticate with `HOLYSHIP_WORKER_TOKEN` (Bearer auth). Initial setup used the admin token, which is for admin-only routes (flow management).
+
+**Decision:** UI container gets `HOLYSHIP_API_TOKEN=${HOLYSHIP_WORKER_TOKEN}` — same token the workers use. The engine's auth middleware checks a single token for all REST routes. Admin routes are separate (tRPC, different auth).
+
+**Result:** UI can read engine data. Worker token is lower privilege than admin token. If we later need separate scopes, the engine auth middleware can be extended.
+
+---
+
+## 2026-03-22 — Holy Ship: Pipeline state ordering via transition graph topology
+
+**Context:** The engine returns flow states in alphabetical order (DB default). The pipeline board displayed: budget_exceeded, cancelled, code, docs... instead of the actual pipeline order.
+
+**Decision:** Client-side topological sort using the transition graph from `/api/flows`. Walk the happy path (first edge at each state from `initialState`), then BFS for side states (fix, stuck), then append orphans (budget_exceeded, cancelled). No server-side change needed — the transition data is already there.
+
+**Result:** Pipeline board shows: spec → code → review → docs → learning → merge → done → fix → stuck → budget_exceeded → cancelled. Matches the actual flow definition.

@@ -4,9 +4,94 @@
 
 ## Current State
 
-**Status:** PRODUCTION — all 4 products live, Paperclip deployed (68.183.160.201), chain server syncing LTC (~44%), DOGE stopped, BTC synced + watcher active
+**Status:** PRODUCTION — all 4 products live, Holy Ship E2E working (holyship.wtf → login → dashboard), Paperclip deployed (68.183.160.201), chain server syncing LTC (~44%), DOGE stopped, BTC synced + watcher active
 **Last Updated:** 2026-03-22
-**Last Operation:** Paperclip Platform deployed to production. Docker socket permissions via systemd oneshot. Pre-built Caddy image (Go OOMs on 1GB). Shared BETTER_AUTH_SECRET for subdomain cookie auth. hosted_proxy deployment mode. Health check 30x2s for first-boot migrations.
+**Last Operation:** Holy Ship full E2E — marketing site, OAuth login, pipeline dashboard with topologically-sorted state columns, engine `/api/flows` endpoint deployed.
+
+## 2026-03-22 — Holy Ship E2E: Marketing Site + OAuth + Pipeline Dashboard
+
+### What shipped (15 PRs + server fixes)
+
+**holyship-ui PRs:** #26-#39 (OAuth fixes, marketing site, dashboard, rename, pipeline ordering)
+**holyship engine PR:** #249 (GET /api/flows endpoint)
+**platform-ui-core PRs:** #52-#53 (shorthand hex color fix)
+
+### Deploy (pull latest + restart)
+
+```bash
+# Engine (API)
+cd /home/tsavo/wopr-ops/local/holyship
+docker compose pull api && docker compose up -d api
+
+# UI (after new image build via GitHub Actions docker.yml)
+docker compose pull ui && docker compose up -d ui
+
+# Full stack
+docker compose pull && docker compose up -d
+```
+
+### Auth troubleshooting
+
+**"State not found undefined" on OAuth callback:**
+- `COOKIE_DOMAIN=.holyship.wtf` must be set on the API container
+- The leading dot is required for subdomain cookie sharing between `api.holyship.wtf` and `holyship.wtf`
+- After changing compose env, must `docker compose up -d --force-recreate` (restart doesn't re-read compose)
+
+**"Provider did not return email" after GitHub OAuth:**
+- GitHub App must have Email addresses permission set to Read-only
+- Configure at: Settings → Developer Settings → GitHub Apps → Holy Ship → Permissions → Account permissions → Email addresses → Read-only
+- Requires passkey/2FA to enter sudo mode in GitHub settings
+
+**Login redirects back to /login instead of /dashboard:**
+- `BETTER_AUTH_URL` on API must point to the API origin (`https://api.holyship.wtf`), not UI
+- Auth client in UI must explicitly set `baseURL` to the API origin — `NEXT_PUBLIC_API_URL` is baked at build time, not at runtime from node_modules
+- Session cookie domain must cover both UI and API subdomains
+
+**Dashboard shows "OFFLINE" status:**
+- WebSocket URL not configured — set `NEXT_PUBLIC_HOLYSHIP_WS_URL=wss://api.holyship.wtf` as build arg
+- REST polling works as fallback (10s interval), so data still loads
+
+### Key env vars (UI container)
+
+| Var | Where | Purpose |
+|-----|-------|---------|
+| `HOLYSHIP_API_URL` | runtime env | Server-side API calls (container-to-container: `http://api:3001`) |
+| `HOLYSHIP_API_TOKEN` | runtime env | Worker token for engine auth (same as `HOLYSHIP_WORKER_TOKEN`) |
+| `API_INTERNAL_URL` | runtime env | Internal API URL for SSR |
+| `NEXT_PUBLIC_API_URL` | build arg | Client-side API calls (public: `https://api.holyship.wtf`) |
+| `NEXT_PUBLIC_HOLYSHIP_WS_URL` | build arg | WebSocket URL for live updates |
+| `NEXT_PUBLIC_GITHUB_APP_URL` | build arg | GitHub App install URL |
+| `NEXT_PUBLIC_BRAND_HOME_PATH` | build arg | Post-login redirect (`/dashboard`) |
+
+### Key env vars (API container)
+
+| Var | Where | Purpose |
+|-----|-------|---------|
+| `COOKIE_DOMAIN` | runtime env | `.holyship.wtf` — session cookies shared across subdomains |
+| `BETTER_AUTH_URL` | runtime env | OAuth callback base URL (`https://api.holyship.wtf`) |
+| `UI_ORIGIN` | runtime env | CORS origin + OAuth redirect target (`https://holyship.wtf`) |
+| `HOLYSHIP_WORKER_TOKEN` | runtime env | Bearer token for engine REST API (claim, report, entities, flows) |
+| `HOLYSHIP_ADMIN_TOKEN` | runtime env | Admin API auth (flow management, admin routes) |
+
+### Routes
+
+| URL | What |
+|-----|------|
+| `holyship.wtf` | Landing page (marketing) |
+| `holyship.wtf/how-it-works` | Marketing: How It Works |
+| `holyship.wtf/the-real-cost` | Marketing: The Real Cost |
+| `holyship.wtf/the-learning-loop` | Marketing: The Learning Loop |
+| `holyship.wtf/vibe-coding-vs-engineering` | Marketing: Vibe vs Engineering |
+| `holyship.wtf/pricing` | Marketing: Pricing (free) |
+| `holyship.wtf/login` | GitHub OAuth login |
+| `holyship.wtf/dashboard` | Pipeline board (main authenticated route) |
+| `holyship.wtf/workers` | Worker pool status (detection & dispatch) |
+| `api.holyship.wtf/api/status` | Engine status (flow counts, active invocations) |
+| `api.holyship.wtf/api/flows` | Flow definitions with states + transitions |
+| `api.holyship.wtf/api/entities` | Entity listing (query by flow/state) |
+| `api.holyship.wtf/api/claim` | Worker claim endpoint |
+
+---
 
 ## 2026-03-22 — Paperclip Platform Production Deploy
 
