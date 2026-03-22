@@ -90,14 +90,15 @@ services:
   # Holy Ship UI (Next.js)
   # ---------------------------------------------------------------------------
   ui:
-    image: ${HOLYSHIP_UI_IMAGE:-ghcr.io/wopr-network/holyship-platform-ui:latest}
+    image: ${HOLYSHIP_UI_IMAGE:-ghcr.io/wopr-network/holyship-ui:latest}
     build:
-      context: ${HOLYSHIP_UI_SRC:-../../../holyship-platform-ui}
+      context: ${HOLYSHIP_UI_SRC:-../../../holyship-ui}
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
         API_INTERNAL_URL: http://api:3001
         NEXT_PUBLIC_GITHUB_APP_URL: ${NEXT_PUBLIC_GITHUB_APP_URL:-https://github.com/apps/holyship}
+        NEXT_PUBLIC_BRAND_NAME: ${NEXT_PUBLIC_BRAND_NAME:-Holy Ship}
         NEXT_PUBLIC_BRAND_PRODUCT_NAME: ${NEXT_PUBLIC_BRAND_PRODUCT_NAME:-Holy Ship}
         NEXT_PUBLIC_BRAND_DOMAIN: ${NEXT_PUBLIC_BRAND_DOMAIN:-holyship.wtf}
         NEXT_PUBLIC_BRAND_TAGLINE: ${NEXT_PUBLIC_BRAND_TAGLINE:-It's what you'll say when you see the results.}
