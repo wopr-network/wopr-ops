@@ -68,6 +68,7 @@ rpcbind=0.0.0.0
 fallbackfee=0.0002
 prune=5000
 walletdir=/data/wallets/mainnet
+wallet=watcher
 printtoconsole=1
 CONFEOF
 chown bitcoin:bitcoin /data/bitcoin.conf /data/wallets/mainnet
