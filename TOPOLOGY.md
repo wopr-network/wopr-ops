@@ -389,7 +389,7 @@ User buys credits (Stripe checkout)
 Centralized crypto payment service shared by all 4 products. Replaces per-product BTCPay stacks entirely.
 
 ```
-Chain Server (DO sfo2, s-2vcpu-4gb, 80GB disk, $24/mo)
+Chain Server (DO sfo2, s-4vcpu-8gb, 80GB disk, $48/mo — temporary upsize for chain sync, downsize to s-2vcpu-4gb/$24 when done)
   IP: 167.71.118.221
   Private IP: 10.120.0.5
   Hostname: pay.wopr.bot

@@ -148,6 +148,27 @@
 
 ---
 
+### 2026-03-22 19:44 UTC — Chain server resized s-2vcpu-4gb → s-4vcpu-8gb (CPU-only, reversible)
+
+**Repos:** wopr-network/wopr-ops
+**VPS:** DigitalOcean chain-server (559531609), IP 167.71.118.221, sfo2
+**Previous size:** s-2vcpu-4gb ($24/mo) — load avg 5.5+ on 2 cores, 0% idle, 2.4GB swap
+**New size:** s-4vcpu-8gb ($48/mo) — CPU/RAM only resize (disk stays 80GB), fully reversible
+
+**Result:** Success — all 5 containers restarted automatically. BTC + LTC both syncing at full speed (~100% + ~93% CPU). No data loss.
+
+**docker-compose.yml committed** to `vps/chain-server/docker-compose.yml` (was only on server).
+
+**Downsize when LTC sync completes:**
+```
+doctl compute droplet-action resize 559531609 --size s-2vcpu-4gb --wait
+doctl compute droplet-action power-on 559531609 --wait
+```
+
+**Rollback needed:** No
+
+---
+
 ### 2026-03-19 21:30 UTC — Shared chain server deployed (DigitalOcean SFO2)
 
 **Repos:** wopr-network/wopr-ops
