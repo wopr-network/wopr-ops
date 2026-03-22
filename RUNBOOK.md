@@ -4,9 +4,124 @@
 
 ## Current State
 
-**Status:** PRODUCTION — all 4 products live, chain server syncing LTC (~44%), DOGE stopped, BTC synced + watcher active
+**Status:** PRODUCTION — all 4 products live, Paperclip deployed (68.183.160.201), chain server syncing LTC (~44%), DOGE stopped, BTC synced + watcher active
 **Last Updated:** 2026-03-22
-**Last Operation:** Crypto key server deployed with PRs #120-#125 (microdollar pricing, CoinGecko, native ETH watcher, DB-driven EVM config, Drizzle error fix). BTC watcher 401 fixed (wallet + credentials). First e2e payment processed (LINK on Sepolia). wopr-platform-ui #468 merged (platform-ui-core v1.18.0).
+**Last Operation:** Paperclip Platform deployed to production. Docker socket permissions via systemd oneshot. Pre-built Caddy image (Go OOMs on 1GB). Shared BETTER_AUTH_SECRET for subdomain cookie auth. hosted_proxy deployment mode. Health check 30x2s for first-boot migrations.
+
+## 2026-03-22 — Paperclip Platform Production Deploy
+
+### What shipped
+
+- **DO droplet provisioned** — `paperclip-platform`, s-1vcpu-1gb, sfo2, 68.183.160.201
+- **DNS configured** — runpaperclip.com + app.runpaperclip.com + api.runpaperclip.com + *.runpaperclip.com → 68.183.160.201 (Cloudflare zone c2ac899c5e55d3ac150197a18effadf2, proxy OFF)
+- **TLS provisioned** — Let's Encrypt via pre-built Caddy + Cloudflare DNS-01 challenge
+- **Full stack running** — Postgres, platform-api (3200), platform-ui (3000), Caddy (TLS), Netdata
+- **Instance provisioning working** — Dashboard creates instances, tenant containers spawn on paperclip-platform network
+- **Subdomain cookie auth** — BETTER_AUTH_SECRET shared between platform and instances, COOKIE_DOMAIN=.runpaperclip.com
+
+### Stack location
+
+- Droplet: `root@68.183.160.201`
+- Compose: `/opt/paperclip-platform/docker-compose.yml`
+- Env: `/opt/paperclip-platform/.env`
+
+### SSH access
+
+```bash
+ssh root@68.183.160.201
+```
+
+### Deploy (pull latest + restart)
+
+```bash
+ssh root@68.183.160.201 'cd /opt/paperclip-platform && docker compose pull && docker compose up -d'
+```
+
+### Create instances
+
+Instances are created via the dashboard at https://app.runpaperclip.com or via tRPC. The platform's FleetManager pulls `PAPERCLIP_IMAGE` and starts a container on the `FLEET_DOCKER_NETWORK`.
+
+### Manual provision (if health check times out)
+
+First boot runs 29 Drizzle migrations, which can exceed the health check window (30 retries x 2s = 60s). If the instance comes up but the platform marks it unhealthy:
+
+```bash
+# Get the instance name from the dashboard or docker ps
+docker ps --filter "name=wopr-" --format '{{.Names}}'
+
+# Manually trigger provisioning
+curl -X POST http://wopr-<name>:3200/internal/provision \
+  -H "Authorization: Bearer $PROVISION_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"gatewayUrl": "https://api.runpaperclip.com/v1"}'
+```
+
+The `PROVISION_SECRET` value is in `/opt/paperclip-platform/.env`.
+
+### Docker socket permissions
+
+The platform-api container needs Docker socket access to spawn tenant containers. Default socket permissions (660, root:docker) block access from inside the container. A systemd oneshot service fixes this persistently:
+
+```bash
+# Already installed via cloud-init. To verify:
+systemctl status docker-socket-perms.service
+
+# The service runs: chmod 666 /var/run/docker.sock
+# It fires after docker.service on every boot
+```
+
+If socket permissions break (container logs show EACCES on /var/run/docker.sock):
+
+```bash
+chmod 666 /var/run/docker.sock
+```
+
+### Stale fleet profiles
+
+If instances fail to provision due to stale fleet state:
+
+```bash
+ssh root@68.183.160.201 'rm /data/fleet/*.yaml'
+ssh root@68.183.160.201 'cd /opt/paperclip-platform && docker compose restart platform-api'
+```
+
+### Wildcard DNS
+
+All `*.runpaperclip.com` subdomains resolve to 68.183.160.201 via Cloudflare wildcard A record (zone c2ac899c5e55d3ac150197a18effadf2). Tenant subdomains (e.g., `my-bot.runpaperclip.com`) are routed by Caddy to platform-api, which proxies to the matching tenant container.
+
+### Health check URLs
+
+- https://api.runpaperclip.com/health
+- https://app.runpaperclip.com
+- https://runpaperclip.com
+
+### Key env vars (on droplet in /opt/paperclip-platform/.env)
+
+| Var | Purpose |
+|-----|---------|
+| `FLEET_DOCKER_NETWORK` | Network tenant containers join (must match compose network name) |
+| `COOKIE_DOMAIN` | `.runpaperclip.com` — session cookies shared across subdomains |
+| `PAPERCLIP_IMAGE` | `ghcr.io/wopr-network/paperclip:managed` — tenant container image |
+| `PROVISION_SECRET` | Bearer token for `/internal/provision` on tenant containers |
+| `BETTER_AUTH_SECRET` | Shared between platform + instances for cookie auth |
+| `GATEWAY_URL` | Inference gateway URL passed to tenant containers |
+| `OPENROUTER_API_KEY` | Upstream LLM provider |
+| `CLOUDFLARE_API_TOKEN` | DNS-01 TLS challenge for Caddy |
+| `STRIPE_SECRET_KEY` | Payment processing (test-mode) |
+| `GHCR_TOKEN` | GitHub Container Registry pull auth |
+| `TRUSTED_PROXY_IPS` | CIDR for hosted_proxy mode (`172.16.0.0/12`) |
+
+### Gotchas
+
+- **Pre-built Caddy image required** — Go compilation OOMs on 1GB droplets. Use `ghcr.io/wopr-network/paperclip-caddy:latest` (built locally with xcaddy + caddy-dns/cloudflare, pushed to GHCR).
+- **Docker socket permissions** — `docker-socket-perms.service` runs `chmod 666 /var/run/docker.sock` after Docker starts. Without it, platform-api can't spawn containers.
+- **Health check timeout on first boot** — Instance containers run 29 Drizzle migrations on first start. The 60s health check window (30x2s) can be tight. Use manual `/internal/provision` if it times out.
+- **Provision routes are at /internal** — must be wired in app.ts manually, not auto-discovered by the router.
+- **COOKIE_DOMAIN must include leading dot** — `.runpaperclip.com` (not `runpaperclip.com`) for subdomain sharing.
+- **FLEET_DOCKER_NETWORK must match compose network** — if compose creates `paperclip-platform` as the default network, that's what this var must be.
+- **Stale fleet profiles** — `/data/fleet/*.yaml` files can get stale after failed provisions. Delete them and restart platform-api.
+
+---
 
 ## 2026-03-21 — Crypto Key Server + DOGE Node Deployment
 
@@ -127,6 +242,7 @@ docker rm doge-tmp && docker rmi ghcr.io/wopr-network/doge-chaindata:latest
 | wopr-platform | 138.68.30.247 | api, ui, caddy, postgres, netdata |
 | holyship | 138.68.46.192 | api, ui, caddy, postgres, netdata |
 | nemoclaw | 167.172.208.149 | api, ui, caddy, postgres, netdata |
+| paperclip-platform | 68.183.160.201 (runpaperclip.com) | api, ui, caddy, postgres, netdata + tenant containers |
 
 ### Netdata Compose (all nodes)
 

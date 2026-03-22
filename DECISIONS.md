@@ -276,3 +276,65 @@ volumes:
 **Decision:** Entire oracle pipeline migrated from cents to microdollars (10⁻⁶ USD). DOGE $0.094 = 94,147 microdollars. `priceCents` → `priceMicros` across all interfaces. Bridge constant `MICROS_PER_CENT = 10,000` for conversion.
 
 **Result:** Sub-cent pricing accurate to 6 decimal places. CoinGecko fallback for DOGE/LTC (no Chainlink feeds on Base). CompositeOracle: Chainlink primary → CoinGecko fallback. `AssetNotSupportedError` distinguishes unknown assets (stablecoin 1:1) from transient failures (503 reject).
+
+---
+
+## 2026-03-22 — Shared BETTER_AUTH_SECRET for subdomain cookie auth (Paperclip)
+
+**Context:** Paperclip instances run as separate containers on tenant subdomains (`my-bot.runpaperclip.com`). Users log in once at `app.runpaperclip.com` and expect seamless access to their instance subdomain without re-authenticating.
+
+**Decision:** Share the same `BETTER_AUTH_SECRET` between the platform and all tenant instances. Set `COOKIE_DOMAIN=.runpaperclip.com` so both `session_token` and `session_data` cookies are readable across all subdomains. The leading dot is required for subdomain sharing.
+
+**Result:** Single sign-on across platform and all tenant instances. No per-instance auth flow needed. The tradeoff is that a compromised instance secret would allow forging sessions for any subdomain — acceptable because we control all instance containers.
+
+---
+
+## 2026-03-22 — hosted_proxy deployment mode (Paperclip)
+
+**Context:** Paperclip instances need to know which user is making requests. Options: (1) each instance does its own auth, (2) platform proxy injects user identity and instances trust it.
+
+**Decision:** Instances run in `hosted_proxy` deployment mode. The platform's tenant proxy adds `X-Paperclip-User-Id` header. Instances trust this header without verifying it themselves. `TRUSTED_PROXY_IPS=172.16.0.0/12` restricts trust to Docker internal networks.
+
+**Result:** Simpler instance code — no auth middleware needed in tenant containers. Platform handles all authentication centrally. The CIDR restriction prevents spoofing from outside the Docker network.
+
+---
+
+## 2026-03-22 — Pre-built Caddy image for 1GB droplets
+
+**Context:** Caddy needs the `caddy-dns/cloudflare` plugin for DNS-01 TLS challenges. The standard approach is building with `xcaddy` in a Dockerfile. On 1GB droplets, Go compilation OOMs during `xcaddy build` — Go's compiler and linker need ~1.5GB+ RAM.
+
+**Decision:** Build the custom Caddy image locally (or on a larger machine), push to `ghcr.io/wopr-network/paperclip-caddy:latest`, and pull the pre-built image on the droplet. No build step on the VPS.
+
+**Result:** Caddy starts instantly on 1GB droplets. The image is ~40MB. Rebuild and push when upgrading Caddy or the cloudflare plugin. Same approach should be used for any future product on 1GB droplets (holyship already uses this pattern).
+
+---
+
+## 2026-03-22 — Docker socket permissions via systemd oneshot
+
+**Context:** `platform-api` needs Docker socket access to spawn tenant containers via Dockerode. The default socket permissions are `660 root:docker`. The container process runs as a non-root user and gets EACCES. Adding the container user to the docker group doesn't work across the mount boundary.
+
+**Decision:** A systemd oneshot service (`docker-socket-perms.service`) runs `chmod 666 /var/run/docker.sock` after `docker.service` starts. This persists across reboots without manual intervention.
+
+**Why not `group_add: docker`?** Compose `group_add` maps by GID, and the host's docker GID may not match inside the container. `chmod 666` is simpler and works universally.
+
+**Result:** Platform-api can always access the Docker socket. The security tradeoff (world-readable socket) is acceptable on a single-purpose VPS where the only users are root and deploy.
+
+---
+
+## 2026-03-22 — Health check window: 30 retries x 2s for first-boot migrations
+
+**Context:** Paperclip tenant instances run 29 Drizzle schema migrations on first boot. The default Docker health check (3 retries x 30s interval) declares the container unhealthy before migrations finish.
+
+**Decision:** Health check configured as `interval: 2s, retries: 30` giving a 60-second window. This covers the migration time on a 1GB droplet while still detecting actual failures reasonably quickly.
+
+**Result:** First boot succeeds within the health window. If it still times out (very slow disk), manual provisioning via `POST /internal/provision` with Bearer token bypasses the health check.
+
+---
+
+## 2026-03-22 — Provision routes at /internal must be explicitly wired
+
+**Context:** Paperclip tenant instances expose `POST /internal/provision` for manual provisioning. This route was expected to be auto-discovered by the Hono router but was returning 404.
+
+**Decision:** The `/internal/*` routes must be explicitly mounted in `app.ts`. They are not auto-discovered because they live outside the standard route directory structure. This is by design — internal routes should be deliberately opt-in.
+
+**Result:** Route wired manually in app.ts. Documented as a gotcha for future internal endpoints.

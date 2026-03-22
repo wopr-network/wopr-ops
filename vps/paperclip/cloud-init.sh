@@ -149,6 +149,7 @@ services:
       - TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS:-172.16.0.0/12}
       - FLEET_API_TOKEN=${FLEET_API_TOKEN:-paperclip_fleet_default}
       - PROVISION_SECRET=${PROVISION_SECRET}
+      - PAPERCLIP_DEPLOYMENT_MODE=hosted_proxy
       - GATEWAY_URL=${GATEWAY_URL}
       - FLEET_DOCKER_NETWORK=${FLEET_DOCKER_NETWORK}
       - REGISTRY_USERNAME=wopr-network
@@ -192,6 +193,27 @@ COMPOSEEOF
 
 chmod 600 /opt/paperclip-platform/.env
 chown deploy:deploy /opt/paperclip-platform/.env
+
+# --- Docker socket permissions (persist across reboots) ---
+# platform-api needs socket access to spawn tenant containers via Dockerode.
+# Default 660 root:docker blocks non-root container processes.
+cat > /etc/systemd/system/docker-socket-perms.service << 'SOCKETEOF'
+[Unit]
+Description=Set Docker socket permissions to 666
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/chmod 666 /var/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target
+SOCKETEOF
+
+systemctl daemon-reload
+systemctl enable docker-socket-perms.service
+systemctl start docker-socket-perms.service
 
 # --- GHCR login (images are private) ---
 GHCR_TOKEN=$(grep GHCR_TOKEN /opt/paperclip-platform/.env | cut -d= -f2)

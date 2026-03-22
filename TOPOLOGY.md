@@ -118,28 +118,67 @@ GPU Node (DigitalOcean — separate droplet)
 
 White-label deployment using platform-core. Same pattern as WOPR but for managed bot hosting.
 
+**DO droplet:** `paperclip-platform`, s-1vcpu-1gb ($6/mo), sfo2, Ubuntu 24.04 LTS, 5GB swap. IP: 68.183.160.201.
+
 ```
 Internet
-  └─ Cloudflare DNS
-       ├─ runpaperclip.com       → VPS IP
-       ├─ app.runpaperclip.com   → VPS IP (dashboard)
-       └─ *.runpaperclip.com     → VPS IP (tenant subdomains)
+  └─ Cloudflare DNS (proxy OFF — Caddy DNS-01 requires it)
+       │  Zone: c2ac899c5e55d3ac150197a18effadf2
+       ├─ runpaperclip.com       → A 68.183.160.201
+       ├─ app.runpaperclip.com   → A 68.183.160.201 (dashboard)
+       └─ *.runpaperclip.com     → A 68.183.160.201 (wildcard — tenant subdomains + api)
 
-Production VPS
-  └─ docker-compose.yml
-       ├─ caddy:2-alpine                (80, 443)
-       │    ├─ app.runpaperclip.com  → dashboard:3000
-       │    ├─ runpaperclip.com/api  → platform:3200
-       │    └─ *.runpaperclip.com    → platform:3200 (tenant proxy)
-       ├─ paperclip-platform         (3200 — internal)
-       │    └─ Docker socket → spawns tenant containers
-       ├─ paperclip-platform-ui      (3000 — internal)
-       └─ postgres:16-alpine         (5432 — internal)
+Production VPS (DO sfo2, s-1vcpu-1gb, 5GB swap, IP 68.183.160.201)
+  └─ docker-compose.yml (/opt/paperclip-platform/)
+       ├─ caddy (pre-built: ghcr.io/wopr-network/paperclip-caddy:latest)  (80, 443 — DNS-01 TLS via CF)
+       │    ├─ runpaperclip.com      → platform-ui:3000
+       │    ├─ app.runpaperclip.com  → platform-ui:3000
+       │    ├─ api.runpaperclip.com  → platform-api:3200
+       │    └─ *.runpaperclip.com    → platform-api:3200 (tenant proxy)
+       ├─ paperclip-platform (platform-api)  (3200 — internal)
+       │    ├─ Docker socket → spawns tenant containers
+       │    ├─ COOKIE_DOMAIN=.runpaperclip.com (shared auth with instances)
+       │    ├─ hosted_proxy deployment mode (instances trust X-Paperclip-User-Id)
+       │    ├─ Inference gateway at /v1 (metered OpenRouter proxy)
+       │    ├─ BetterAuth at /api/auth/*
+       │    ├─ tRPC at /trpc/*
+       │    └─ platform-core: auth, billing, credits, gateway, fleet
+       ├─ paperclip-platform-ui     (3000 — internal)
+       ├─ postgres:16-alpine        (5432 — internal)
+       └─ netdata                   (19999 — host network, Netdata Cloud)
+       NOTE: All services on named network "paperclip-platform" (compose default)
 
 Tenant Containers (dynamic, managed by paperclip-platform via Dockerode)
-  └─ paperclip-managed:latest
-       └─ one per tenant, named volume /data for persistence
+  └─ ghcr.io/wopr-network/paperclip:managed
+       ├─ one per tenant, named volume /data for persistence
+       ├─ BETTER_AUTH_SECRET shared with platform (subdomain cookie auth)
+       ├─ /internal/provision endpoint for manual provisioning
+       └─ Health check: 30 retries × 2s = 60s (first boot runs 29 migrations)
 ```
+
+### Paperclip Key Env Vars
+
+| Var | Where | Purpose |
+|-----|-------|---------|
+| `DATABASE_URL` | platform-api | Shared Postgres |
+| `BETTER_AUTH_SECRET` | platform-api + instances | Shared secret for subdomain cookie auth |
+| `COOKIE_DOMAIN` | platform-api | `.runpaperclip.com` — session cookies work across subdomains |
+| `PAPERCLIP_IMAGE` | platform-api | `ghcr.io/wopr-network/paperclip:managed` |
+| `FLEET_DOCKER_NETWORK` | platform-api | Docker network instances join (must match compose network) |
+| `PROVISION_SECRET` | platform-api | Bearer token for `/internal/provision` on instances |
+| `GATEWAY_URL` | platform-api | Inference gateway URL for tenant containers |
+| `OPENROUTER_API_KEY` | platform-api | Upstream LLM provider for gateway |
+| `STRIPE_SECRET_KEY` | platform-api | Payment processing |
+| `CLOUDFLARE_API_TOKEN` | caddy | DNS-01 TLS challenge |
+| `TRUSTED_PROXY_IPS` | platform-api | CIDR for hosted_proxy trust (`172.16.0.0/12`) |
+
+UI build-time vars (baked into Next.js at image build):
+| `NEXT_PUBLIC_API_URL` | platform-ui | API base URL (`https://api.runpaperclip.com`) |
+| `NEXT_PUBLIC_APP_DOMAIN` | platform-ui | Dashboard domain (`app.runpaperclip.com`) |
+
+### Paperclip Deployment Mode: hosted_proxy
+
+Instances run in `hosted_proxy` mode. The platform's tenant proxy adds `X-Paperclip-User-Id` header and instances trust it (no per-instance auth). Session cookies use `COOKIE_DOMAIN=.runpaperclip.com` so both `session_token` and `session_data` cookies are readable by both the platform and instance subdomains.
 
 ## Holy Ship Architecture (holyship.wtf)
 
@@ -465,8 +504,8 @@ User action → LLM call → gateway proxy → upstream provider
 | platform-api | 3100 | Via Caddy at api.wopr.bot |
 | platform-ui | 3000 | Via Caddy at wopr.bot |
 | **Paperclip** | | |
-| paperclip-platform | 3200 | Via Caddy at runpaperclip.com/api |
-| paperclip-platform-ui | 3000 | Via Caddy at app.runpaperclip.com |
+| paperclip-platform | 3200 | Via Caddy at api.runpaperclip.com |
+| paperclip-platform-ui | 3000 | Via Caddy at runpaperclip.com / app.runpaperclip.com |
 | **Holy Ship** | | |
 | holyship-api | 3001 | Via Caddy at api.holyship.wtf |
 | holyship-platform-ui | 3000 | Via Caddy at holyship.wtf |
