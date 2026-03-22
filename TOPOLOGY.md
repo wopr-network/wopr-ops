@@ -61,7 +61,7 @@ platform-core (npm package — v1.50+)
     │    ├── X-Attribute-To header for cross-tenant attribution
     │    └── Usage sanitized to standard OpenAI format (strips OpenRouter extras)
     ├── Org/tenant isolation (DrizzleOrgMemberRepository)
-    ├── Notification pipeline (Resend email, 29 templates, 30s poll)
+    ├── Notification pipeline (SES primary, Resend fallback; 29 templates, 30s poll)
     ├── tRPC router factories (billing, org, settings, profile)
     └── Drizzle ORM (shared Postgres schema + migrations)
 
@@ -586,3 +586,45 @@ console.log(root.derive(\"m/44'/60'/N'\").publicExtendedKey);
 ```
 
 **Why account-level xpubs:** Each deployment holds only its branch. A server compromise exposes only that platform's address space. Addresses are mathematically disjoint — no code or config error can produce collisions.
+
+## AWS SES Email Infrastructure
+
+Transactional email for all products. AWS account `264991295931`, IAM user `ses-admin` (AmazonSESFullAccess policy). Region: `us-east-1`.
+
+```
+platform-core SesTransport (v1.51.0+)
+    ├── Auto-selects SES when AWS_SES_REGION is set
+    ├── Falls back to Resend when SES env vars absent
+    └── Legacy RESEND_FROM / RESEND_REPLY_TO still work as fallback
+
+AWS SES (us-east-1)
+    ├── runpaperclip.com  — verified (DKIM + SPF + verification TXT)
+    ├── wopr.bot          — verified (DKIM + SPF + verification TXT)
+    ├── holyship.wtf      — verified (DKIM + SPF + verification TXT)
+    └── nemopod.com       — not yet verified
+
+DNS (Cloudflare)
+    Per domain:
+    ├── _amazonses.<domain> TXT  (SES domain verification token)
+    ├── 3x CNAME              (DKIM: <selector>._domainkey.<domain> → <selector>.dkim.amazonses.com)
+    └── TXT "v=spf1 include:amazonses.com ~all"  (SPF)
+```
+
+### SES Env Vars (per product)
+
+| Variable | Example | Notes |
+|----------|---------|-------|
+| `AWS_SES_REGION` | `us-east-1` | Presence triggers SES transport |
+| `AWS_ACCESS_KEY_ID` | `AKIA...` | IAM user `ses-admin` |
+| `AWS_SECRET_ACCESS_KEY` | (secret) | IAM user `ses-admin` |
+| `EMAIL_FROM` | `noreply@runpaperclip.com` | Sender address (new unified var) |
+| `EMAIL_REPLY_TO` | `support@runpaperclip.com` | Reply-to (optional) |
+| `RESEND_API_KEY` | `re_...` | Fallback — used only when SES vars absent |
+
+### SES Production Access
+
+SES starts in **sandbox mode** — can only send to verified recipient addresses. Production access requested (pending AWS approval). Once approved, all verified domains can send to any recipient.
+
+### Verification Script
+
+`scripts/ses-verify-domain.sh <domain> <cloudflare-zone-id>` — verifies domain in SES, retrieves DKIM tokens, adds all DNS records to Cloudflare via API. Requires `aws` CLI + `CF_API_TOKEN` env var.

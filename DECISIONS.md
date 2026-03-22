@@ -321,6 +321,37 @@ volumes:
 
 ---
 
+## 2026-03-22 — AWS SES replaces Resend for transactional email
+
+**Context:** All 4 products used Resend for transactional email (verification, notifications, password reset). Resend charges per email after the free tier, requires a per-domain API key, and has no automation API for domain verification. With 4 products and growing, this doesn't scale.
+
+**Decision:** AWS SES as the primary email transport. One AWS account (264991295931), one IAM user (`ses-admin`), one region (`us-east-1`). `platform-core` v1.51.0 adds `SesTransport` that auto-selects SES when `AWS_SES_REGION` is set, falls back to Resend when absent.
+
+**Why SES over Resend:**
+- **Cost:** SES is $0.10/1,000 emails with no monthly minimum. Resend free tier caps at 100 emails/day, then $20/mo for 50k. At our volume (low hundreds/day across 4 products), SES is effectively free.
+- **Automation:** `ses-verify-domain.sh` script verifies a domain and adds all DNS records (verification TXT, 3 DKIM CNAMEs, SPF) to Cloudflare in one command. Resend requires manual dashboard clicks per domain.
+- **Single credential set:** One IAM user serves all 4 products. Resend needs a separate API key per sending domain.
+- **Deliverability:** SES has dedicated IP pools, suppression list management, and bounce/complaint dashboards. Resend abstracts these away with less control.
+
+**Tradeoff:** SES starts in sandbox mode — can only send to verified recipients until AWS approves production access. Resend works immediately. During the transition, keep `RESEND_API_KEY` as fallback.
+
+**Rollout plan:**
+
+| Phase | Products | Prereq | Action |
+|-------|----------|--------|--------|
+| 1 | Paperclip | SES env vars already in .env | Bump platform-core to 1.51.0, rebuild image, restart |
+| 2 | WOPR + HolyShip | SES production access approved | Add SES env vars, bump platform-core, deploy |
+| 3 | Nemoclaw + cleanup | Phase 2 stable | Verify nemoclaw domain (`ses-verify-domain.sh`), deploy, remove Resend deps, cancel Resend subscription |
+
+**Current state (2026-03-22):**
+- 3 domains verified in SES: `runpaperclip.com`, `wopr.bot`, `holyship.wtf`
+- DNS records (DKIM + SPF + verification) added to Cloudflare for all 3
+- Test email confirmed: `noreply@runpaperclip.com` → `tsavo@wopr.bot`
+- SES production access: requested, pending approval
+- Paperclip droplet: SES env vars set, awaiting platform-core 1.51.0 image rebuild
+
+---
+
 ## 2026-03-22 — Health check window: 30 retries x 2s for first-boot migrations
 
 **Context:** Paperclip tenant instances run 29 Drizzle schema migrations on first boot. The default Docker health check (3 retries x 30s interval) declares the container unhealthy before migrations finish.

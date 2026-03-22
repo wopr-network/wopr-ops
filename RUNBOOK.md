@@ -2443,3 +2443,90 @@ docker restart holyship-caddy   # (or the appropriate project prefix)
 **Action:** Resize droplet from s-2vcpu-4gb ($24/mo) to s-1vcpu-2gb ($12/mo) via DO console or API
 **Why:** 4GB RAM only needed during IBD. Post-sync, tip chain uses ~300MB. 2GB + swap is plenty.
 **Check IBD progress:** `ssh root@pay.wopr.bot 'docker exec chain-server-bitcoind-1 bitcoin-cli -rpcuser=btcpay -rpcpassword=btcpay-chain-2026 getchainstates'` — when only 1 chainstate remains, IBD is done.
+
+## AWS SES Email Operations
+
+### Verify a new domain
+
+```bash
+# Requires: aws CLI configured, CF_API_TOKEN env var, Cloudflare zone ID
+cd ~/wopr-ops
+./scripts/ses-verify-domain.sh <domain> <cloudflare-zone-id>
+
+# Verify DNS propagation (may take 5-30 minutes)
+aws ses get-identity-verification-attributes \
+  --identities <domain> --region us-east-1
+
+# Check DKIM status
+aws ses get-identity-dkim-attributes \
+  --identities <domain> --region us-east-1
+```
+
+### Check SES sending status
+
+```bash
+# Check if still in sandbox
+aws ses get-account --region us-east-1
+# Look for: "ProductionAccessEnabled": true
+
+# Check verified domains
+aws ses list-identities --identity-type Domain --region us-east-1
+
+# Check send quota and usage
+aws ses get-send-quota --region us-east-1
+```
+
+### Troubleshoot email delivery
+
+```bash
+# Check bounce/complaint rates (must stay under 5% bounce, 0.1% complaint)
+aws ses get-send-statistics --region us-east-1
+
+# Check specific domain verification status
+aws ses get-identity-verification-attributes \
+  --identities runpaperclip.com wopr.bot holyship.wtf --region us-east-1
+
+# Test sending (sandbox: recipient must be verified)
+aws ses send-email --region us-east-1 \
+  --from "noreply@runpaperclip.com" \
+  --destination "ToAddresses=tsavo@wopr.bot" \
+  --message "Subject={Data=Test},Body={Text={Data=SES test from CLI}}"
+
+# Check suppression list (addresses that bounced)
+aws sesv2 list-suppressed-destinations --region us-east-1
+```
+
+### SES sandbox limitations
+
+While in sandbox mode:
+- Can only send to **verified email addresses** (not just verified domains)
+- Max 200 emails/day, 1 email/second
+- Verify individual test recipients: `aws ses verify-email-identity --email-address user@example.com --region us-east-1`
+
+After production access approved:
+- 50,000 emails/day (soft limit, can request increase)
+- 14 emails/second
+- Can send to any recipient
+
+### Switch a product from Resend to SES
+
+Add these env vars to the product's `.env` / docker-compose:
+
+```bash
+AWS_SES_REGION=us-east-1
+AWS_ACCESS_KEY_ID=<ses-admin key>
+AWS_SECRET_ACCESS_KEY=<ses-admin secret>
+EMAIL_FROM=noreply@<domain>
+EMAIL_REPLY_TO=support@<domain>
+```
+
+`platform-core` v1.51.0+ auto-detects `AWS_SES_REGION` and uses SES. If absent, falls back to Resend (`RESEND_API_KEY`). Keep `RESEND_API_KEY` during transition as a safety net.
+
+### SES Gotchas
+
+- **DKIM propagation takes up to 72 hours** — usually 5-30 minutes, but AWS docs say up to 72h. Don't panic.
+- **SPF record conflicts** — if the domain already has an SPF record, merge `include:amazonses.com` into the existing record. Two SPF TXT records on the same domain = both fail.
+- **Sandbox mode is per-region** — production access in `us-east-1` doesn't apply to `eu-west-1`.
+- **Bounce rate over 5% triggers automatic sending pause** — monitor via `aws ses get-send-statistics`.
+- **`EMAIL_FROM` must match a verified domain** — sending from an unverified domain returns `MessageRejected`.
+- **IAM user `ses-admin` has full SES access** — scope down to `ses:SendEmail` + `ses:SendRawEmail` after rollout stabilizes.
