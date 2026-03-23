@@ -343,12 +343,13 @@ volumes:
 | 2 | WOPR + HolyShip | SES production access approved | Add SES env vars, bump platform-core, deploy |
 | 3 | Nemoclaw + cleanup | Phase 2 stable | Verify nemoclaw domain (`ses-verify-domain.sh`), deploy, remove Resend deps, cancel Resend subscription |
 
-**Current state (2026-03-22):**
+**Current state (2026-03-23):**
 - 3 domains verified in SES: `runpaperclip.com`, `wopr.bot`, `holyship.wtf`
 - DNS records (DKIM + SPF + verification) added to Cloudflare for all 3
 - Test email confirmed: `noreply@runpaperclip.com` → `tsavo@wopr.bot`
-- SES production access: requested, pending approval
-- Paperclip droplet: SES env vars set, awaiting platform-core 1.51.0 image rebuild
+- SES production access: requested, pending approval (sandbox = 200 emails/day, verified recipients only)
+- **Phase 1 COMPLETE (2026-03-23):** Paperclip running on SES. platform-core 1.56.0 deployed. `getEmailClient()` auto-selects SES. `RESEND_API_KEY` commented out in production .env. API log confirms: `"Email client initialized with AWS SES"`.
+- **Important:** Consumers must use `getEmailClient()` (singleton with auto-detection), NOT `new EmailClient({ apiKey })` which hardcodes Resend.
 
 ---
 
