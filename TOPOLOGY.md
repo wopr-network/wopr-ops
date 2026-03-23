@@ -593,17 +593,34 @@ console.log(root.derive(\"m/44'/60'/N'\").publicExtendedKey);
 
 Transactional email for all products. AWS account `264991295931`, IAM user `ses-admin` (AmazonSESFullAccess policy). Region: `us-east-1`.
 
+**IMPORTANT:** Consumers must use `getEmailClient()` from `@wopr-network/platform-core/email`, NOT `new EmailClient({ apiKey })`. The singleton auto-detects SES vs Resend from env vars.
+
 ```
-platform-core SesTransport (v1.51.0+)
-    ├── Auto-selects SES when AWS_SES_REGION is set
-    ├── Falls back to Resend when SES env vars absent
+platform-core getEmailClient() (v1.51.0+)
+    ├── Priority 1: SES — when AWS_SES_REGION is set
+    ├── Priority 2: Resend — when RESEND_API_KEY is set
+    ├── Reads EMAIL_FROM (default: noreply@wopr.bot)
+    ├── Reads EMAIL_REPLY_TO (default: support@wopr.bot)
     └── Legacy RESEND_FROM / RESEND_REPLY_TO still work as fallback
 
+Required env vars for SES:
+    AWS_SES_REGION=us-east-1
+    AWS_ACCESS_KEY_ID=...          (from ses-admin IAM user)
+    AWS_SECRET_ACCESS_KEY=...
+    EMAIL_FROM=noreply@<domain>
+    EMAIL_REPLY_TO=support@<domain>
+
 AWS SES (us-east-1)
-    ├── runpaperclip.com  — verified (DKIM + SPF + verification TXT)
-    ├── wopr.bot          — verified (DKIM + SPF + verification TXT)
-    ├── holyship.wtf      — verified (DKIM + SPF + verification TXT)
+    ├── runpaperclip.com  — verified, ACTIVE (Paperclip uses SES as of 2026-03-23)
+    ├── wopr.bot          — verified (awaiting Phase 2)
+    ├── holyship.wtf      — verified (awaiting Phase 2)
     └── nemopod.com       — not yet verified
+
+Product status:
+    ├── Paperclip  — SES ACTIVE, Resend disabled (Phase 1 complete 2026-03-23)
+    ├── WOPR       — Resend (awaiting SES production access for Phase 2)
+    ├── HolyShip   — Resend (awaiting Phase 2)
+    └── Nemoclaw   — no email configured (Phase 3)
 
 DNS (Cloudflare)
     Per domain:
