@@ -246,3 +246,30 @@ doctl compute droplet-action power-on 559531609 --wait
 **CI/CD:** GitHub Actions build+push green. Deploy workflow SSH fails (connection refused). Deploy manually: `ssh root@167.172.208.149 'cd /opt/nemoclaw-platform && docker compose pull && docker compose up -d'`
 
 **Rollback needed:** No
+
+---
+
+### 2026-03-23 07:30 UTC — NemoPod full UI rebrand + billing + inference routing
+
+**Repos:** wopr-network/nemoclaw-platform, wopr-network/nemoclaw-platform-ui, wopr-network/platform-ui-core
+**VPS:** 167.172.208.149
+
+**What shipped:**
+- **Full UI rebrand**: Indigo (#818cf8) palette replacing terminal green. Custom landing page, auth layout with NemoPod logo, all amber→indigo, CRT effects removed, system-ui font
+- **Brand config**: `.env.brand` + CI build args + `setBrandConfig()` all updated NemoClaw→NemoPod
+- **platform-ui-core v1.22.3**: BrandWordmark reads tagline from config; tRPC switched from httpBatchStreamLink to httpBatchLink (fixes batch corruption)
+- **Chat persistence**: `chat_messages` table, history endpoint, frontend loads on tab switch
+- **Tenant creation on signup**: `onUserCreated` hook calls `getOrCreatePersonalOrg`
+- **Billing working**: Credit balance page loads, $5 signup credits show, Stripe checkout redirects
+- **Caddy API proxy**: `/trpc/*` and `/api/*` on app.nemopod.com proxied to platform
+- **Inference routing**: Chat route now calls platform's metered `/v1` gateway with `deepseek/deepseek-v3.2`. OpenRouter key updated.
+
+**Verified:**
+- Landing, login, signup, billing/credits, Stripe checkout, chat tabs, claim, persistence
+
+**Still blocking:**
+- Inference returns 404 — metered gateway mounted at /v1 but chat route call gets "Not found". Debug: gateway key auth, model ID, or localhost resolution inside container.
+
+**Stripe dashboard (manual):** Account name + product name still say WOPR/NemoClaw — update in Stripe dashboard.
+
+**Rollback needed:** No
