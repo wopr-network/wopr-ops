@@ -212,4 +212,4 @@ No code changes needed. The `OAuthButtons` component in `platform-ui-core` rende
 | Paperclip | 68.183.160.201 | `Ov23likozOBEs9lzUXIh` | `964670643245-...` |
 | WOPR | 138.68.30.247 | — | Existing "Wopr" client |
 | HolyShip | 138.68.46.192 | — | — |
-| NemoClaw | 167.172.208.149 | — | — |
+| NemoPod | 167.172.208.149 | `Ov23liv0pdshD81JcPFU` | `964670643245-...` |
