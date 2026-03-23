@@ -9,7 +9,7 @@
 ##
 ## Direct ports (bypass Caddy, local dev):
 ##   3001 → holyship API
-##   3000 → holyship UI
+##   3002 → holyship UI
 
 services:
   # ---------------------------------------------------------------------------
@@ -30,8 +30,6 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
-    networks:
-      - holyship
 
   # ---------------------------------------------------------------------------
   # Holy Ship API
@@ -49,6 +47,7 @@ services:
       DATABASE_URL: postgresql://holyship:${POSTGRES_PASSWORD}@postgres:5432/holyship
       PORT: "3001"
       HOST: "0.0.0.0"
+      NODE_ENV: production
       HOLYSHIP_ADMIN_TOKEN: ${HOLYSHIP_ADMIN_TOKEN}
       HOLYSHIP_WORKER_TOKEN: ${HOLYSHIP_WORKER_TOKEN}
       GITHUB_APP_ID: ${GITHUB_APP_ID}
@@ -71,21 +70,30 @@ services:
       # Worker pool — ephemeral holyshipper containers
       HOLYSHIP_WORKER_IMAGE: ${HOLYSHIP_WORKER_IMAGE:-ghcr.io/wopr-network/wopr-holyshipper-coder:latest}
       HOLYSHIP_GATEWAY_KEY: ${HOLYSHIP_GATEWAY_KEY}
+      HOLYSHIP_PLATFORM_SERVICE_KEY: ${HOLYSHIP_PLATFORM_SERVICE_KEY:-}
       HOLYSHIP_MODEL_TIER_OVERRIDE: ${HOLYSHIP_MODEL_TIER_OVERRIDE:-}
-      DOCKER_NETWORK: holyship_holyship
+      DOCKER_NETWORK: holyship
+      REGISTRY_USERNAME: ${REGISTRY_USERNAME}
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
+      REGISTRY_SERVER: ${REGISTRY_SERVER:-ghcr.io}
+      CRYPTO_SERVICE_URL: ${CRYPTO_SERVICE_URL:-http://pay.wopr.bot:3100}
       EVM_XPUB: ${EVM_XPUB:-}
       EVM_RPC_BASE: ${EVM_RPC_BASE:-https://mainnet.base.org}
     group_add:
-      - "${DOCKER_GID:-1001}"
+      - "${DOCKER_GID:-988}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - holyship_data:/tmp/fleet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     expose:
       - "3001"
     ports:
       - "3001:3001"
     restart: unless-stopped
-    networks:
-      - holyship
 
   # ---------------------------------------------------------------------------
   # Holy Ship UI (Next.js)
@@ -113,14 +121,26 @@ services:
       API_INTERNAL_URL: http://api:3001
       HOLYSHIP_API_URL: http://api:3001
       HOLYSHIP_API_TOKEN: ${HOLYSHIP_WORKER_TOKEN}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
+      BETTER_AUTH_URL: ${NEXT_PUBLIC_API_URL:-https://api.holyship.wtf}
       NEXT_PUBLIC_HOLYSHIP_WS_URL: ${NEXT_PUBLIC_HOLYSHIP_WS_URL:-wss://api.holyship.wtf}
+      NEXT_PUBLIC_BRAND_PRODUCT_NAME: ${NEXT_PUBLIC_BRAND_PRODUCT_NAME:-Holy Ship}
+      NEXT_PUBLIC_BRAND_NAME: ${NEXT_PUBLIC_BRAND_NAME:-Holy Ship}
+      NEXT_PUBLIC_BRAND_DOMAIN: ${NEXT_PUBLIC_BRAND_DOMAIN:-holyship.wtf}
+      NEXT_PUBLIC_BRAND_TAGLINE: ${NEXT_PUBLIC_BRAND_TAGLINE:-It's what you'll say when you see the results.}
+      NEXT_PUBLIC_BRAND_STORAGE_PREFIX: ${NEXT_PUBLIC_BRAND_STORAGE_PREFIX:-holyship}
+      NEXT_PUBLIC_BRAND_HOME_PATH: ${NEXT_PUBLIC_BRAND_HOME_PATH:-/dashboard}
+      NEXT_PUBLIC_GITHUB_APP_URL: ${NEXT_PUBLIC_GITHUB_APP_URL:-https://github.com/apps/holy-ship}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     expose:
       - "3000"
     ports:
       - "3002:3000"
     restart: unless-stopped
-    networks:
-      - holyship
 
   # ---------------------------------------------------------------------------
   # Caddy (reverse proxy, auto-TLS)
@@ -144,15 +164,13 @@ services:
       api:
         condition: service_healthy
     restart: unless-stopped
-    networks:
-      - holyship
-
 
 volumes:
   postgres_data:
+  holyship_data:
   caddy_data:
   caddy_config:
 
 networks:
-  holyship:
-    driver: bridge
+  default:
+    name: holyship
