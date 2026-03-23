@@ -1,0 +1,27 @@
+{
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+}
+
+nemopod.com {
+	reverse_proxy nemoclaw-ui:3000
+}
+
+app.nemopod.com {
+	handle /trpc/* {
+		reverse_proxy nemoclaw-platform:3100
+	}
+	handle /api/* {
+		reverse_proxy nemoclaw-platform:3100
+	}
+	handle {
+		reverse_proxy nemoclaw-ui:3000
+	}
+}
+
+api.nemopod.com {
+	reverse_proxy nemoclaw-platform:3100
+}
+
+*.nemopod.com {
+	reverse_proxy nemoclaw-platform:3100
+}

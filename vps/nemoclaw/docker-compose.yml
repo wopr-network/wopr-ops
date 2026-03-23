@@ -1,0 +1,85 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nemoclaw_platform
+      POSTGRES_USER: nemoclaw
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nemoclaw -d nemoclaw_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nemoclaw-platform:
+    image: ghcr.io/wopr-network/nemoclaw-platform:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://nemoclaw:${POSTGRES_PASSWORD}@postgres:5432/nemoclaw_platform
+      - PORT=3100
+      - PLATFORM_DOMAIN=nemopod.com
+      - PROVISION_SECRET=${PROVISION_SECRET}
+      - NEMOCLAW_IMAGE=${NEMOCLAW_IMAGE:-ghcr.io/wopr-network/nemoclaw:latest}
+      - NEMOCLAW_CONTAINER_PORT=3100
+      - FLEET_DOCKER_NETWORK=nemoclaw-platform_default
+      - GATEWAY_URL=https://api.nemopod.com/v1
+      - POOL_SIZE_DEFAULT=2
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
+      - BETTER_AUTH_URL=https://api.nemopod.com
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - SES_FROM_EMAIL=${SES_FROM_EMAIL:-noreply@nemopod.com}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+    volumes:
+      - fleet_data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3100/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  nemoclaw-ui:
+    image: ghcr.io/wopr-network/nemoclaw-platform-ui:latest
+    restart: unless-stopped
+    depends_on:
+      nemoclaw-platform:
+        condition: service_healthy
+    environment:
+      - NEXT_PUBLIC_API_URL=https://api.nemopod.com
+      - BETTER_AUTH_URL=https://api.nemopod.com
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    build:
+      context: ./caddy
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  fleet_data:
+  caddy_data:
+  caddy_config:

@@ -198,3 +198,51 @@ doctl compute droplet-action power-on 559531609 --wait
 5. Resize droplet to s-1vcpu-2gb ($12/mo) after full sync
 
 **Rollback needed:** No
+
+---
+
+### 2026-03-23 05:30 UTC — NemoPod dashboard redesign + hot pool + chat persistence
+
+**Repos:** wopr-network/nemoclaw-platform, wopr-network/nemoclaw-platform-ui, wopr-network/platform-ui-core
+**VPS:** DigitalOcean s-1vcpu-1gb ($6/mo), IP 167.172.208.149
+**Images deployed:**
+- `ghcr.io/wopr-network/nemoclaw-platform:latest` (11 commits: pool manager, claim, chat persistence)
+- `ghcr.io/wopr-network/nemoclaw-platform-ui:latest` (12 commits: tab UI, first-run, chat history)
+- `@wopr-network/platform-ui-core@1.21.0` (pool.claim type stub)
+
+**Result:** Success — full E2E verified
+
+**What shipped:**
+- **Hot instance pool**: Pre-warmed Docker containers for instant claim (no 2-min cold start)
+  - `pool_config` table (DB-configurable pool size, default 2)
+  - `pool_instances` table (warm/claimed/dead lifecycle)
+  - Pool manager: 60s replenish cycle, dead cleanup, chown UID 999, HOME=/data
+  - Atomic claim: `FOR UPDATE SKIP LOCKED`, container rename, fleet profile, proxy route
+- **Tab-based chat dashboard**: Replaced card grid with browser-like tab UX
+  - FirstRun: "Name your first NemoClaw" + subdomain preview
+  - ChatTabBar: tabs with health dots (green/gray/red) + [+] add
+  - ChatPanel from platform-ui-core renders full chat per tab
+  - useInstanceChat hook: per-instance SSE connection
+- **Chat persistence**: `chat_messages` table in Postgres
+  - Messages saved on send (user) and completion (assistant)
+  - `GET /api/chat/history?instanceId=xxx` returns paginated history
+  - Frontend loads history from DB on tab switch — survives switches, reloads, restarts
+- **Caddy API proxy**: `/trpc/*` and `/api/*` on `app.nemopod.com` proxied to platform API
+  - Fix for `NEXT_PUBLIC_API_URL` being build-time only in Next.js
+- **3 post-deploy bug fixes:**
+  1. `WOPR_PROVISION_SECRET` env var (sidecar reads different name than pool manager set)
+  2. Removed `ReadonlyRootfs` (openclaw init needs writable rootfs)
+  3. Health check timeout 30s → 90s (OpenClaw gateway takes ~60s to start)
+
+**Verified endpoints:**
+- `https://app.nemopod.com/instances` → tab UI with chat
+- `https://app.nemopod.com/trpc/fleet.listInstances` → JSON (Caddy proxy working)
+- Instant claim from hot pool → container renamed, provisioned, tab appears
+- Chat message → routed to correct container → response received
+- Tab switch → history loaded from DB → messages persist
+
+**DNS:** nemopod.com, app.nemopod.com, api.nemopod.com, *.nemopod.com → 167.172.208.149
+
+**CI/CD:** GitHub Actions build+push green. Deploy workflow SSH fails (connection refused). Deploy manually: `ssh root@167.172.208.149 'cd /opt/nemoclaw-platform && docker compose pull && docker compose up -d'`
+
+**Rollback needed:** No
