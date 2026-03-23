@@ -52,7 +52,7 @@ services:
     environment:
       - DOGE_RPC_PASSWORD=${DOGE_RPC_PASSWORD}
     volumes:
-      - doge_data:/home/dogecoin/.dogecoin
+      - /mnt/ltc_sync:/home/dogecoin/.dogecoin
       - ./dogecoind-wrapper.sh:/opt/wrapper.sh:ro
     restart: unless-stopped
 
@@ -65,15 +65,15 @@ services:
     environment:
       - LTC_RPC_PASSWORD=${LTC_RPC_PASSWORD}
     volumes:
-      - /mnt/ltc_sync:/data
+      - ltc_data:/data
       - ./litecoind-wrapper.sh:/opt/wrapper.sh:ro
     restart: unless-stopped
 
 volumes:
   bitcoin_data:
-  postgres_data:
-  doge_data:
+  ltc_data:
     external: true
+  postgres_data:
 
 networks:
   default:
