@@ -409,3 +409,33 @@ volumes:
 **Decision:** Client-side topological sort using the transition graph from `/api/flows`. Walk the happy path (first edge at each state from `initialState`), then BFS for side states (fix, stuck), then append orphans (budget_exceeded, cancelled). No server-side change needed — the transition data is already there.
 
 **Result:** Pipeline board shows: spec → code → review → docs → learning → merge → done → fix → stuck → budget_exceeded → cancelled. Matches the actual flow definition.
+
+---
+
+## 2026-03-22 — Holy Ship: DOCKER_NETWORK must match compose network name
+
+**Context:** Worker containers spawned by the fleet manager joined `holyship_default` but the API container was on `holyship`. Workers couldn't reach the API.
+
+**Decision:** `DOCKER_NETWORK=holyship` in the compose file, matching the actual network name from `docker network ls`. The compose-generated default network (`holyship_default`) is not the one used when a named network is defined in `networks:`.
+
+**Result:** Worker containers spawn on the correct network and can reach `api:3001`.
+
+---
+
+## 2026-03-22 — Holy Ship: Fleet manager needs Docker group + registry creds
+
+**Context:** Engine container couldn't create worker containers — Docker socket was `rw` for group `docker` (GID 988) but the container didn't have that group. Also, anonymous GHCR pulls were rate-limited.
+
+**Decision:** Add `group_add: ["988"]` to the API service in compose. Pass `REGISTRY_USERNAME`, `REGISTRY_PASSWORD`, `REGISTRY_SERVER` env vars so fleet manager authenticates pulls.
+
+**Result:** Fleet manager creates containers in ~2s. Authenticated pulls avoid rate limits.
+
+---
+
+## 2026-03-22 — Holy Ship: InterrogationService was using noopFleet
+
+**Context:** Clicking "Analyze Repo" in the UI caused the engine to log "[interrogation] provisioning runner" then hang silently. The InterrogationService was initialized with a `noopFleet` that always rejected — the real `HolyshipperFleetManager` was scoped inside the worker pool `if` block.
+
+**Decision:** Hoist `holyshipperFleetManager` as a module-level `let` variable, assign inside the worker pool block, reference via nullish coalesce in the interrogation service init. PR #250 on wopr-network/holyship.
+
+**Result:** Analyze provisions worker in ~2s, runs LLM calls through gateway (billed), completes in ~90s with config + gaps + flow editor.
