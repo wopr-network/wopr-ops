@@ -229,6 +229,87 @@ volumes:
 
 ---
 
+## 2026-03-23 — One chain at a time: contention kills throughput
+
+**Context:** Chain server (s-2vcpu-4gb) was pegged at load 5.5+ with BTC and LTC both syncing. 0% idle CPU, 2.4GB swap in use. LTC syncing at ~8 blocks/sec.
+
+**Decision:** Never sync multiple chains concurrently on a small VPS. Stop already-synced chains during active sync. Resize CPU-only (reversible) if needed.
+
+**Why:** Concurrent chain sync causes cascading contention at every layer:
+- **I/O thrashing** — competing page cache evictions, every disk read is a miss
+- **Scheduler thrashing** — CPU-bound processes context-switching constantly on 2 cores
+- **L2/L3 cache thrashing** — each context switch invalidates the other process's hot cache lines
+
+**Result:** Resized to s-4vcpu-8gb ($48/mo, CPU-only = reversible), stopped BTC. LTC went from 8 blocks/sec → 40+ blocks/sec — a 5x improvement. 2x from more cores, 2x from eliminating contention. LTC finished syncing in ~20 hours.
+
+**Rule:** Sync one chain at a time. Stop the others. Resize temporarily if needed (CPU-only resize is free to reverse).
+
+---
+
+## 2026-03-23 — Bitcoin assumeutxo requires both chainstates
+
+**Context:** BTC uses assumeutxo with two chainstates: `chainstate_snapshot` (at tip, functional) and `chainstate` (background validation from genesis). Background validation was burning CPU. Attempted to delete `chainstate` to skip it.
+
+**Decision:** Do NOT delete the background validation chainstate. Bitcoin Core requires both directories. Deleting `chainstate` causes crash loops ("Failed for FlatFilePos(nFile=-1, nPos=0)"). Creating an empty replacement also fails — pruned block references can't resolve.
+
+**What we tried:**
+1. Delete `chainstate` entirely → crash loop, 12 restarts
+2. Create empty `chainstate` directory → boots further but still crash loops on block file lookups
+
+**What saved us:** Full backup on external volume (`/mnt/ltc_sync/btc-backup/`). Restored `chainstate` from backup, BTC came up clean.
+
+**Lesson:** Always back up before modifying chainstate. Background validation is the price of assumeutxo — you can't skip it without a full resync.
+
+---
+
+## 2026-03-23 — Chain data migration pattern: external volume → main disk
+
+**Context:** LTC synced on 100GB external DO volume ($10/mo). Needed to move to main disk and eventually delete the volume.
+
+**Decision:** 9-step migration pattern with no data deletion until fully verified:
+1. Stop the chain daemon (clean shutdown)
+2. Backup to GHCR as OCI artifact (insurance)
+3. Copy to Docker named volume on main disk
+4. Verify copy (byte count + file count comparison)
+5. Update docker-compose.yml (bind mount → named volume with `external: true`)
+6. Start daemon on new volume
+7. Verify sync resumes (check UpdateTip in logs)
+8. Watch for 10+ minutes (no restarts, no errors)
+9. Only then: delete external volume
+
+**Key details:**
+- Docker Compose prefixes volume names with project name — use `external: true` to reference a manually-created volume by exact name
+- Source data stays untouched until step 9
+- GHCR backup exists independently from step 2
+- Two independent copies before anything gets deleted
+
+**Result:** LTC migrated successfully. DOGE moved to the (now empty) external volume to sync. Same pattern will be applied when DOGE finishes.
+
+---
+
+## 2026-03-23 — DO CPU-only resize for temporary compute needs
+
+**Context:** Chain sync is CPU-bound but temporary. Need more compute during sync, less after.
+
+**Decision:** Use DigitalOcean CPU-only resize (omit `--resize-disk` flag). This changes CPU/RAM but keeps disk size fixed, making the resize fully reversible. Can downsize back to original plan when sync completes.
+
+**Commands:**
+```bash
+# Upsize (auto powers off)
+doctl compute droplet-action resize <id> --size s-4vcpu-8gb --wait
+doctl compute droplet-action power-on <id> --wait
+
+# Downsize when done
+doctl compute droplet-action resize <id> --size s-2vcpu-4gb --wait
+doctl compute droplet-action power-on <id> --wait
+```
+
+**Gotcha:** Resize auto-powers-off but does NOT auto-power-on. Must explicitly `power-on` after.
+
+**Cost:** $48/mo during sync, $24/mo after. Temporary spend for 5x throughput.
+
+---
+
 ## 2026-03-21 — Nemoclaw reprovisioned at s-1vcpu-1gb ($6/mo)
 
 **Context:** Nemoclaw was running on s-2vcpu-4gb ($24/mo) with bitcoind + BTCPay + nbxplorer — all dead weight since the chain server handles crypto. Couldn't resize in place because DO won't shrink disks.

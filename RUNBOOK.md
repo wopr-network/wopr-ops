@@ -4,9 +4,9 @@
 
 ## Current State
 
-**Status:** PRODUCTION — all 4 products live, Holy Ship E2E working (holyship.wtf → login → dashboard), Paperclip deployed (68.183.160.201), chain server syncing LTC (~44%), DOGE stopped, BTC synced + watcher active
-**Last Updated:** 2026-03-22
-**Last Operation:** Holy Ship full E2E — marketing site, OAuth login, pipeline dashboard with topologically-sorted state columns, engine `/api/flows` endpoint deployed.
+**Status:** PRODUCTION — all 4 products live. Chain server: BTC synced (snapshot chainstate, bg validation removed), LTC synced (migrated to main disk), DOGE syncing (~9%, on external volume). Disk 60%.
+**Last Updated:** 2026-03-23
+**Last Operation:** Chain server resize + LTC migration + disk cleanup (95%→60%). DOGE moved to external volume to sync.
 
 ## 2026-03-22 — Holy Ship E2E: Marketing Site + OAuth + Pipeline Dashboard
 

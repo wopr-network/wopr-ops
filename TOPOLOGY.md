@@ -395,7 +395,7 @@ Chain Server (DO sfo2, s-4vcpu-8gb, 80GB disk, $48/mo — temporary upsize for c
   IP: 167.71.118.221
   Private IP: 10.120.0.5
   Hostname: pay.wopr.bot
-  Attached volume: ltc-sync (100GB, /mnt/ltc_sync) — temporary for LTC sync, $10/mo
+  Attached volume: ltc-sync (100GB, /mnt/ltc_sync) — DOGE syncing here + BTC backup. Delete after DOGE migrates to main disk.
   └─ docker-compose.yml (/opt/chain-server/)
        ├─ crypto-key-server          (port 3100 — ghcr.io/wopr-network/crypto-key-server:latest)
        │    ├─ Hono HTTP — 7 API endpoints
@@ -415,22 +415,24 @@ Chain Server (DO sfo2, s-4vcpu-8gb, 80GB disk, $48/mo — temporary upsize for c
        │    └─ Watcher service — boots UTXO watchers (BTC/DOGE/LTC) + EVM watchers from DB
        │
        ├─ bitcoind                   (port 8332 — btcpayserver/bitcoin:30.2)
-       │    ├─ Mainnet, pruned 5GB, ~26GB on disk
+       │    ├─ Mainnet, pruned 5GB, ~27GB on disk
+       │    ├─ Synced at tip (assumeutxo snapshot chainstate + background validation)
        │    ├─ Custom wrapper entrypoint (bypasses BTCPay entrypoint bugs)
-       │    └─ Volume: chain-server_bitcoin_data (Docker managed)
+       │    ├─ Volume: chain-server_bitcoin_data (Docker managed)
+       │    └─ Backup: /mnt/ltc_sync/btc-backup/ (on external volume)
        │
        ├─ dogecoind                  (port 22555 — blocknetdx/dogecoin:latest)
-       │    ├─ Mainnet, pruned 2200MB, ~4GB on disk (rebuilding chainstate)
+       │    ├─ Mainnet, pruned 2200MB, ~4GB on disk, syncing (~9%)
        │    ├─ Custom wrapper entrypoint (writes config, execs dogecoind directly)
        │    ├─ Seed nodes by IP (hostnames don't resolve inside container)
-       │    ├─ Blocks pre-loaded from ghcr.io/wopr-network/doge-chaindata:latest
-       │    └─ Volume: doge_data (external, Docker managed)
+       │    ├─ Data on external volume: /mnt/ltc_sync (bind mount, 100GB DO block storage)
+       │    └─ After sync: migrate to Docker named volume on main disk (same pattern as LTC)
        │
        ├─ litecoind                  (port 9332 — uphold/litecoin-core:latest)
-       │    ├─ Mainnet, pruned 2200MB, syncing from peers (~90GB download → ~3GB pruned)
+       │    ├─ Mainnet, pruned 2200MB, ~5.8GB on disk — FULLY SYNCED
        │    ├─ Custom wrapper entrypoint (same pattern as BTC/DOGE)
-       │    ├─ Data on attached volume: /mnt/ltc_sync (100GB DO block storage)
-       │    ├─ After sync: move pruned data to main disk, detach volume
+       │    ├─ Volume: ltc_data (external, Docker managed, on main disk)
+       │    ├─ Backup: ghcr.io/wopr-network/ltc-chaindata:latest
        │    └─ DNS seeds work natively (uphold image has proper DNS)
        │
        ├─ postgres:16-alpine        (5432 — internal, DB: crypto_key_server)
