@@ -87,20 +87,22 @@ push to main (any repo)
 ```
 Internet
   └─ Cloudflare DNS (proxy OFF — required for Caddy DNS-01)
-       ├─ wopr.bot        → 206.189.173.166
-       ├─ app.wopr.bot    → 206.189.173.166
-       └─ api.wopr.bot    → 206.189.173.166
+       ├─ wopr.bot        → 138.68.30.247
+       ├─ app.wopr.bot    → 138.68.30.247
+       └─ api.wopr.bot    → 138.68.30.247
 
-VPS (DigitalOcean — wopr-platform, s-1vcpu-1gb, sfo2, 206.189.173.166)
-  └─ docker-compose.yml
-       ├─ caddy:2-alpine                (80, 443)
-       │    ├─ wopr.bot/            → platform-ui:3000
-       │    ├─ api.wopr.bot/api     → platform-api:3100
-       │    ├─ api.wopr.bot/trpc    → platform-api:3100
-       │    └─ api.wopr.bot/fleet   → platform-api:3100
-       ├─ platform-api               (3100 — internal)
-       │    └─ Docker socket → spawns tenant containers
-       └─ platform-ui                (3000 — internal)
+VPS (DigitalOcean — wopr-platform, 138.68.30.247)
+  └─ /opt/wopr-platform/docker-compose.yml (synced to wopr-ops/vps/wopr/)
+       ├─ caddy (custom build w/ cloudflare DNS)  (80, 443)
+       │    ├─ wopr.bot           → platform-ui:3000
+       │    ├─ app.wopr.bot       → platform-ui:3000
+       │    ├─ api.wopr.bot       → platform-api:3100
+       │    └─ *.wopr.bot         → platform-api:3100
+       ├─ platform-api (ghcr.io/wopr-network/wopr-platform:latest)  (3100)
+       │    ├─ Docker socket mounted → spawns tenant containers
+       │    ├─ wopr daemon (onboarding) on port 3847
+       │    └─ postgres:16-alpine (wopr_platform DB)
+       └─ platform-ui (ghcr.io/wopr-network/wopr-platform-ui:latest)  (3000)
 
 Tenant Containers (dynamic, managed by platform-api via Dockerode)
   └─ ghcr.io/wopr-network/wopr:latest
