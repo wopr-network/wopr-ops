@@ -444,10 +444,22 @@ Chain Server (DO sfo2, s-4vcpu-8gb, 80GB disk, $48/mo — temporary upsize for c
             ├─ TCP 3100: VPC + product VPS IPs
             └─ TCP 8332/22555/9332: product VPS IPs only
 
-Products call: POST https://pay.wopr.bot:3100/charges → receive webhook callbacks
+Products call: POST http://167.71.118.221:3100/charges → receive webhook callbacks
   Env vars per product:
-    CRYPTO_SERVICE_URL=http://pay.wopr.bot:3100
-    CRYPTO_WEBHOOK_URL=https://api.{product}/billing/crypto/webhook
+    CRYPTO_SERVICE_URL=http://167.71.118.221:3100
+    CRYPTO_SERVICE_KEY=sk-chain-2026          (Bearer auth for charge creation + webhook delivery)
+  Chain server env:
+    SERVICE_KEY=sk-chain-2026                 (validates Bearer from products)
+    ADMIN_TOKEN=ks-admin-2026                 (admin ops: list chains, manage payment methods)
+  Webhook callback URL (set per checkout, not env):
+    https://api.{product}/api/webhooks/crypto  (product generates this from PLATFORM_DOMAIN)
+
+Firewall IPs for port 3100:
+  - 138.68.30.247   (wopr-platform)
+  - 138.68.46.192   (holyship)
+  - 167.172.208.149 (nemoclaw)
+  - 68.183.160.201  (paperclip-platform) — added 2026-03-24
+  - 142.129.145.46  (admin IP)
 
 All nodes use wrapper entrypoint pattern:
   entrypoint: ["/opt/wrapper.sh"]  +  volumes: ./XXX-wrapper.sh:/opt/wrapper.sh:ro

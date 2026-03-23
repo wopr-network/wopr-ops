@@ -1,315 +1,367 @@
 #!/usr/bin/env npx tsx
 /**
- * Crypto sweep tool — consolidates ETH + stablecoins from deposit addresses to treasury.
+ * Crypto sweep tool — consolidates ETH + ERC-20s from deposit addresses to treasury.
  *
  * RUNS LOCALLY ONLY. Never on the server. Handles private keys.
  *
+ * Fetches token list from the chain server — no hardcoded contracts.
+ * Add a new token to the chain server → it's automatically swept.
+ *
  * Order matters (chicken-and-egg):
  *   1. Sweep ETH first — deposit addresses self-fund gas, treasury receives ETH
- *   2. Fund gas — treasury sends ETH to stablecoin deposit addresses
+ *   2. Fund gas — treasury sends ETH to ERC-20 deposit addresses
  *   3. Sweep ERC-20s — deposit addresses send all tokens to treasury
  *
  * Without step 1, the treasury may have no ETH to fund gas for step 2.
  *
  * Usage:
  *   openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d -pass pass:<passphrase> \
- *     -in "/mnt/g/My Drive/paperclip-wallet.enc" | npx tsx scripts/sweep-stablecoins.ts
- *
- * Or interactively:
- *   npx tsx scripts/sweep-stablecoins.ts
- *   (paste mnemonic, press Ctrl+D)
+ *     -in "/mnt/g/My Drive/paperclip-wallet.enc" \
+ *     | CRYPTO_SERVICE_URL=http://167.71.118.221:3100 \
+ *       CRYPTO_SERVICE_KEY=sk-chain-2026 \
+ *       EVM_RPC=https://ethereum-sepolia-rpc.publicnode.com \
+ *       EVM_CHAIN=sepolia \
+ *       npx tsx scripts/sweep-stablecoins.ts
  *
  * Env vars:
- *   EVM_RPC_BASE    — Base node RPC URL (default: http://localhost:8545)
- *   SWEEP_DRY_RUN   — set to "false" to actually broadcast (default: true)
+ *   CRYPTO_SERVICE_URL  — Chain server URL (required)
+ *   CRYPTO_SERVICE_KEY  — Chain server auth key (required)
+ *   EVM_RPC             — RPC endpoint for the chain to sweep (required)
+ *   EVM_CHAIN           — Chain ID to sweep (e.g. "base", "sepolia") (required)
+ *   SWEEP_DRY_RUN       — set to "false" to actually broadcast (default: true)
+ *   MAX_ADDRESSES       — how many deposit addresses to scan (default: 200)
  */
 
 import { HDKey } from "@scure/bip32";
 import * as bip39 from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import {
-  createPublicClient,
-  createWalletClient,
-  formatEther,
-  formatUnits,
-  http,
-  parseEther,
-  type Address,
-  type Chain,
+	createPublicClient,
+	createWalletClient,
+	defineChain,
+	formatEther,
+	formatUnits,
+	http,
+	type Address,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { base } from "viem/chains";
 
 // --- Config ---
 
-const RPC_URL = process.env.EVM_RPC_BASE ?? "http://localhost:8545";
+const CRYPTO_SERVICE_URL = process.env.CRYPTO_SERVICE_URL;
+const CRYPTO_SERVICE_KEY = process.env.CRYPTO_SERVICE_KEY;
+const RPC_URL = process.env.EVM_RPC ?? process.env.EVM_RPC_BASE;
+const CHAIN_ID = process.env.EVM_CHAIN;
 const DRY_RUN = process.env.SWEEP_DRY_RUN !== "false";
-const MAX_INDEX = 200; // scan up to 200 deposit addresses
+const MAX_INDEX = Number(process.env.MAX_ADDRESSES ?? "200");
 
-// ERC-20 tokens on Base (all accepted payment methods)
-const TOKENS: Array<{ name: string; address: Address; decimals: number }> = [
-  { name: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
-  { name: "USDT", address: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2", decimals: 6 },
-  { name: "DAI", address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb", decimals: 18 },
-  { name: "WETH", address: "0x4200000000000000000000000000000000000006", decimals: 18 },
-  { name: "cbBTC", address: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf", decimals: 8 },
-  { name: "AERO", address: "0x940181a94A35A4569E4529A3CDfB74e38FD98631", decimals: 18 },
-  { name: "LINK", address: "0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196", decimals: 18 },
-  { name: "UNI", address: "0xc3De830EA07524a0761646a6a4e4be0e114a3C83", decimals: 18 },
-  { name: "PEPE", address: "0xb4fBF271143F4FBf7B91A5ded31805e42b2208d6", decimals: 18 },
-  { name: "SHIB", address: "0x2dE81E7E4cE120C85E1e846C326004A87cC0B168", decimals: 18 },
-  { name: "RENDER", address: "0x5765F016ECb0e498EaF996085e09907B9e8045c0", decimals: 18 },
-];
+if (!CRYPTO_SERVICE_URL) {
+	console.error("CRYPTO_SERVICE_URL is required");
+	process.exit(1);
+}
+if (!RPC_URL) {
+	console.error("EVM_RPC is required");
+	process.exit(1);
+}
+if (!CHAIN_ID) {
+	console.error("EVM_CHAIN is required (e.g. 'base', 'sepolia')");
+	process.exit(1);
+}
 
 // ERC-20 balanceOf + transfer ABI (minimal)
 const ERC20_ABI = [
-  {
-    name: "balanceOf",
-    type: "function",
-    stateMutability: "view",
-    inputs: [{ name: "account", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    name: "transfer",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "to", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-    outputs: [{ name: "", type: "bool" }],
-  },
+	{
+		name: "balanceOf",
+		type: "function",
+		stateMutability: "view",
+		inputs: [{ name: "account", type: "address" }],
+		outputs: [{ name: "", type: "uint256" }],
+	},
+	{
+		name: "transfer",
+		type: "function",
+		stateMutability: "nonpayable",
+		inputs: [
+			{ name: "to", type: "address" },
+			{ name: "amount", type: "uint256" },
+		],
+		outputs: [{ name: "", type: "bool" }],
+	},
 ] as const;
+
+// --- Fetch tokens from chain server ---
+
+interface ChainToken {
+	id: string;
+	token: string;
+	chain: string;
+	decimals: number;
+	contractAddress: string | null;
+	displayName: string;
+}
+
+async function fetchTokens(): Promise<Array<{ name: string; address: Address; decimals: number }>> {
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	if (CRYPTO_SERVICE_KEY) headers.Authorization = `Bearer ${CRYPTO_SERVICE_KEY}`;
+
+	const res = await fetch(`${CRYPTO_SERVICE_URL}/chains`, { headers });
+	if (!res.ok) throw new Error(`Chain server returned ${res.status}`);
+
+	const chains: ChainToken[] = await res.json();
+
+	// Filter to ERC-20 tokens on the target chain (have a contractAddress)
+	return chains
+		.filter((c) => c.chain === CHAIN_ID && c.contractAddress)
+		.map((c) => ({
+			name: c.token,
+			address: c.contractAddress as Address,
+			decimals: c.decimals,
+		}));
+}
 
 // --- Helpers ---
 
 function derivePrivateKey(master: HDKey, chainIndex: number, addressIndex: number): `0x${string}` {
-  const child = master.deriveChild(chainIndex).deriveChild(addressIndex);
-  if (!child.privateKey) throw new Error(`No private key at ${chainIndex}/${addressIndex}`);
-  return `0x${Array.from(child.privateKey, (b) => b.toString(16).padStart(2, "0")).join("")}` as `0x${string}`;
+	const child = master.deriveChild(chainIndex).deriveChild(addressIndex);
+	if (!child.privateKey) throw new Error(`No private key at ${chainIndex}/${addressIndex}`);
+	return `0x${Array.from(child.privateKey, (b) => b.toString(16).padStart(2, "0")).join("")}` as `0x${string}`;
 }
 
 function deriveAddress(master: HDKey, chainIndex: number, addressIndex: number): Address {
-  const privKey = derivePrivateKey(master, chainIndex, addressIndex);
-  return privateKeyToAccount(privKey).address;
+	const privKey = derivePrivateKey(master, chainIndex, addressIndex);
+	return privateKeyToAccount(privKey).address;
 }
 
 // --- Main ---
 
 async function main() {
-  // Read mnemonic from stdin
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk);
-  }
-  const mnemonic = Buffer.concat(chunks).toString("utf-8").trim();
+	// Read mnemonic from stdin
+	const chunks: Buffer[] = [];
+	for await (const chunk of process.stdin) {
+		chunks.push(chunk);
+	}
+	const mnemonic = Buffer.concat(chunks).toString("utf-8").trim();
 
-  if (!bip39.validateMnemonic(mnemonic, wordlist)) {
-    console.error("Invalid mnemonic");
-    process.exit(1);
-  }
+	if (!bip39.validateMnemonic(mnemonic, wordlist)) {
+		console.error("Invalid mnemonic");
+		process.exit(1);
+	}
 
-  const seed = bip39.mnemonicToSeedSync(mnemonic);
-  const master = HDKey.fromMasterSeed(seed);
-  const evmAccount = master.derive("m/44'/60'/0'");
+	// Fetch tokens from chain server
+	console.log(`Fetching tokens from ${CRYPTO_SERVICE_URL} (chain: ${CHAIN_ID})...`);
+	const TOKENS = await fetchTokens();
+	console.log(`Found ${TOKENS.length} ERC-20 tokens: ${TOKENS.map((t) => t.name).join(", ") || "(none — ETH only)"}`);
 
-  // Treasury = internal chain (1), index 0
-  const treasuryAddress = deriveAddress(evmAccount, 1, 0);
-  const treasuryPrivKey = derivePrivateKey(evmAccount, 1, 0);
-  const treasuryAccount = privateKeyToAccount(treasuryPrivKey);
+	const seed = bip39.mnemonicToSeedSync(mnemonic);
+	const master = HDKey.fromMasterSeed(seed);
+	const evmAccount = master.derive("m/44'/60'/0'");
 
-  console.log(`Treasury: ${treasuryAddress}`);
-  console.log(`RPC: ${RPC_URL}`);
-  console.log(`Dry run: ${DRY_RUN}`);
-  console.log(`Scanning ${MAX_INDEX} deposit addresses...\n`);
+	// Treasury = internal chain (1), index 0
+	const treasuryAddress = deriveAddress(evmAccount, 1, 0);
+	const treasuryPrivKey = derivePrivateKey(evmAccount, 1, 0);
+	const treasuryAccount = privateKeyToAccount(treasuryPrivKey);
 
-  const publicClient = createPublicClient({ chain: base, transport: http(RPC_URL) });
-  const walletClient = createWalletClient({
-    chain: base,
-    transport: http(RPC_URL),
-    account: treasuryAccount,
-  });
+	// Use a generic chain definition so we can sweep any EVM chain
+	const chain = defineChain({
+		id: 1,
+		name: CHAIN_ID,
+		nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+		rpcUrls: { default: { http: [RPC_URL!] } },
+	});
 
-  const gasPrice = await publicClient.getGasPrice();
-  // ~21k gas for native ETH transfer, ~65k for ERC-20 transfer
-  const ethTransferGas = 21_000n * gasPrice;
-  const erc20TransferGas = 65_000n * gasPrice;
+	console.log(`\nTreasury: ${treasuryAddress}`);
+	console.log(`RPC: ${RPC_URL}`);
+	console.log(`Chain: ${CHAIN_ID}`);
+	console.log(`Dry run: ${DRY_RUN}`);
+	console.log(`Scanning ${MAX_INDEX} deposit addresses...\n`);
 
-  // ============================================================
-  // Phase 1: Scan all deposit addresses for ETH + token balances
-  // ============================================================
-  console.log("--- Scanning deposit addresses ---");
+	const publicClient = createPublicClient({ chain, transport: http(RPC_URL) });
+	const walletClient = createWalletClient({
+		chain,
+		transport: http(RPC_URL),
+		account: treasuryAccount,
+	});
 
-  type DepositInfo = {
-    index: number;
-    address: Address;
-    ethBalance: bigint;
-    tokenBalances: Array<{ name: string; address: Address; decimals: number; balance: bigint }>;
-  };
+	const gasPrice = await publicClient.getGasPrice();
+	const ethTransferGas = 21_000n * gasPrice;
+	const erc20TransferGas = 65_000n * gasPrice;
 
-  const deposits: DepositInfo[] = [];
+	// ============================================================
+	// Phase 1: Scan all deposit addresses for ETH + token balances
+	// ============================================================
+	console.log("--- Scanning deposit addresses ---");
 
-  for (let i = 0; i < MAX_INDEX; i++) {
-    const addr = deriveAddress(evmAccount, 0, i);
-    const ethBalance = await publicClient.getBalance({ address: addr });
+	type DepositInfo = {
+		index: number;
+		address: Address;
+		ethBalance: bigint;
+		tokenBalances: Array<{ name: string; address: Address; decimals: number; balance: bigint }>;
+	};
 
-    const tokenBalances: DepositInfo["tokenBalances"] = [];
-    for (const token of TOKENS) {
-      const balance = await publicClient.readContract({
-        address: token.address,
-        abi: ERC20_ABI,
-        functionName: "balanceOf",
-        args: [addr],
-      });
-      if (balance > 0n) {
-        tokenBalances.push({ ...token, balance });
-      }
-    }
+	const deposits: DepositInfo[] = [];
 
-    if (ethBalance > 0n || tokenBalances.length > 0) {
-      const parts = [`${formatEther(ethBalance)} ETH`];
-      for (const t of tokenBalances) parts.push(`${formatUnits(t.balance, t.decimals)} ${t.name}`);
-      console.log(`  [${i}] ${addr}: ${parts.join(", ")}`);
-      deposits.push({ index: i, address: addr, ethBalance, tokenBalances });
-    }
-  }
+	for (let i = 0; i < MAX_INDEX; i++) {
+		const addr = deriveAddress(evmAccount, 0, i);
+		const ethBalance = await publicClient.getBalance({ address: addr });
 
-  if (deposits.length === 0) {
-    console.log("\nNo deposit addresses with balances. Nothing to sweep.");
-    return;
-  }
+		const tokenBalances: DepositInfo["tokenBalances"] = [];
+		for (const token of TOKENS) {
+			try {
+				const balance = await publicClient.readContract({
+					address: token.address,
+					abi: ERC20_ABI,
+					functionName: "balanceOf",
+					args: [addr],
+				});
+				if (balance > 0n) {
+					tokenBalances.push({ ...token, balance });
+				}
+			} catch {
+				// Contract may not exist on this chain — skip silently
+			}
+		}
 
-  const ethDeposits = deposits.filter((d) => d.ethBalance > ethTransferGas);
-  const tokenDeposits = deposits.filter((d) => d.tokenBalances.length > 0);
-  const totalEth = ethDeposits.reduce((sum, d) => sum + d.ethBalance, 0n);
+		if (ethBalance > 0n || tokenBalances.length > 0) {
+			const parts = [`${formatEther(ethBalance)} ETH`];
+			for (const t of tokenBalances) parts.push(`${formatUnits(t.balance, t.decimals)} ${t.name}`);
+			console.log(`  [${i}] ${addr}: ${parts.join(", ")}`);
+			deposits.push({ index: i, address: addr, ethBalance, tokenBalances });
+		}
+	}
 
-  console.log(`\nFound: ${ethDeposits.length} ETH deposits (${formatEther(totalEth)} ETH)`);
-  for (const token of TOKENS) {
-    const total = tokenDeposits.reduce(
-      (sum, d) => sum + (d.tokenBalances.find((t) => t.name === token.name)?.balance ?? 0n),
-      0n,
-    );
-    if (total > 0n) console.log(`       ${formatUnits(total, token.decimals)} ${token.name}`);
-  }
+	if (deposits.length === 0) {
+		console.log("\nNo deposit addresses with balances. Nothing to sweep.");
+		return;
+	}
 
-  if (DRY_RUN) {
-    console.log("\nDry run — no transactions broadcast. Set SWEEP_DRY_RUN=false to sweep.");
-    return;
-  }
+	const ethDeposits = deposits.filter((d) => d.ethBalance > ethTransferGas);
+	const tokenDeposits = deposits.filter((d) => d.tokenBalances.length > 0);
+	const totalEth = ethDeposits.reduce((sum, d) => sum + d.ethBalance, 0n);
 
-  // ============================================================
-  // Phase 2: Sweep ETH FIRST (self-funded gas → fills treasury)
-  // ============================================================
-  // This MUST run before stablecoin sweep. Treasury may be empty —
-  // ETH deposits self-fund their own gas, so this always works.
-  // After this phase, treasury has ETH to fund gas for Phase 3.
+	console.log(`\nFound: ${ethDeposits.length} ETH deposits (${formatEther(totalEth)} ETH)`);
+	for (const token of TOKENS) {
+		const total = tokenDeposits.reduce(
+			(sum, d) => sum + (d.tokenBalances.find((t) => t.name === token.name)?.balance ?? 0n),
+			0n,
+		);
+		if (total > 0n) console.log(`       ${formatUnits(total, token.decimals)} ${token.name}`);
+	}
 
-  if (ethDeposits.length > 0) {
-    console.log("\n--- Phase 1: Sweeping ETH to treasury (self-funded gas) ---");
-    for (const dep of ethDeposits) {
-      const depPrivKey = derivePrivateKey(evmAccount, 0, dep.index);
-      const depAccount = privateKeyToAccount(depPrivKey);
-      const depWallet = createWalletClient({
-        chain: base,
-        transport: http(RPC_URL),
-        account: depAccount,
-      });
+	if (DRY_RUN) {
+		console.log("\nDry run — no transactions broadcast. Set SWEEP_DRY_RUN=false to sweep.");
+		return;
+	}
 
-      // Send balance minus gas cost — the deposit pays its own gas
-      const sweepAmount = dep.ethBalance - ethTransferGas;
-      if (sweepAmount <= 0n) {
-        console.log(`  [${dep.index}] Balance too low to cover gas, skipping`);
-        continue;
-      }
+	// ============================================================
+	// Phase 2: Sweep ETH FIRST (self-funded gas → fills treasury)
+	// ============================================================
+	if (ethDeposits.length > 0) {
+		console.log("\n--- Phase 1: Sweeping ETH to treasury (self-funded gas) ---");
+		for (const dep of ethDeposits) {
+			const depPrivKey = derivePrivateKey(evmAccount, 0, dep.index);
+			const depAccount = privateKeyToAccount(depPrivKey);
+			const depWallet = createWalletClient({
+				chain,
+				transport: http(RPC_URL),
+				account: depAccount,
+			});
 
-      const hash = await depWallet.sendTransaction({
-        to: treasuryAddress,
-        value: sweepAmount,
-      });
-      console.log(`  [${dep.index}] Swept ${formatEther(sweepAmount)} ETH: ${hash}`);
-      await publicClient.waitForTransactionReceipt({ hash });
-    }
-  }
+			const sweepAmount = dep.ethBalance - ethTransferGas;
+			if (sweepAmount <= 0n) {
+				console.log(`  [${dep.index}] Balance too low to cover gas, skipping`);
+				continue;
+			}
 
-  // ============================================================
-  // Phase 3: Fund gas + sweep stablecoins
-  // ============================================================
-  // Treasury now has ETH (from Phase 2 + any prior balance).
+			const hash = await depWallet.sendTransaction({
+				to: treasuryAddress,
+				value: sweepAmount,
+			});
+			console.log(`  [${dep.index}] Swept ${formatEther(sweepAmount)} ETH: ${hash}`);
+			await publicClient.waitForTransactionReceipt({ hash });
+		}
+	}
 
-  if (tokenDeposits.length > 0) {
-    const treasuryEth = await publicClient.getBalance({ address: treasuryAddress });
-    const totalGasNeeded = erc20TransferGas * BigInt(
-      tokenDeposits.reduce((n, d) => n + d.tokenBalances.length, 0),
-    );
+	// ============================================================
+	// Phase 3: Fund gas + sweep ERC-20s
+	// ============================================================
+	if (tokenDeposits.length > 0) {
+		const treasuryEth = await publicClient.getBalance({ address: treasuryAddress });
+		const totalGasNeeded =
+			erc20TransferGas * BigInt(tokenDeposits.reduce((n, d) => n + d.tokenBalances.length, 0));
 
-    console.log(`\n--- Phase 2: Funding gas for stablecoin sweeps ---`);
-    console.log(`Treasury ETH: ${formatEther(treasuryEth)}, gas needed: ${formatEther(totalGasNeeded)}`);
+		console.log("\n--- Phase 2: Funding gas for ERC-20 sweeps ---");
+		console.log(`Treasury ETH: ${formatEther(treasuryEth)}, gas needed: ${formatEther(totalGasNeeded)}`);
 
-    if (treasuryEth < totalGasNeeded) {
-      console.error(`Insufficient treasury ETH for gas. Need ${formatEther(totalGasNeeded)}, have ${formatEther(treasuryEth)}.`);
-      console.error("Sweep more ETH deposits or manually fund the treasury.");
-      process.exit(1);
-    }
+		if (treasuryEth < totalGasNeeded) {
+			console.error(
+				`Insufficient treasury ETH for gas. Need ${formatEther(totalGasNeeded)}, have ${formatEther(treasuryEth)}.`,
+			);
+			console.error("Sweep more ETH deposits or manually fund the treasury.");
+			process.exit(1);
+		}
 
-    for (const dep of tokenDeposits) {
-      const depEth = await publicClient.getBalance({ address: dep.address });
-      const needed = erc20TransferGas * BigInt(dep.tokenBalances.length);
-      if (depEth >= needed) {
-        console.log(`  [${dep.index}] Already has gas, skipping`);
-        continue;
-      }
+		for (const dep of tokenDeposits) {
+			const depEth = await publicClient.getBalance({ address: dep.address });
+			const needed = erc20TransferGas * BigInt(dep.tokenBalances.length);
+			if (depEth >= needed) {
+				console.log(`  [${dep.index}] Already has gas, skipping`);
+				continue;
+			}
 
-      const hash = await walletClient.sendTransaction({
-        to: dep.address,
-        value: needed - depEth,
-      });
-      console.log(`  [${dep.index}] Funded ${formatEther(needed - depEth)} ETH: ${hash}`);
-      await publicClient.waitForTransactionReceipt({ hash });
-    }
+			const hash = await walletClient.sendTransaction({
+				to: dep.address,
+				value: needed - depEth,
+			});
+			console.log(`  [${dep.index}] Funded ${formatEther(needed - depEth)} ETH: ${hash}`);
+			await publicClient.waitForTransactionReceipt({ hash });
+		}
 
-    console.log("\n--- Phase 3: Sweeping stablecoins to treasury ---");
-    for (const dep of tokenDeposits) {
-      const depPrivKey = derivePrivateKey(evmAccount, 0, dep.index);
-      const depAccount = privateKeyToAccount(depPrivKey);
-      const depWallet = createWalletClient({
-        chain: base,
-        transport: http(RPC_URL),
-        account: depAccount,
-      });
+		console.log("\n--- Phase 3: Sweeping ERC-20s to treasury ---");
+		for (const dep of tokenDeposits) {
+			const depPrivKey = derivePrivateKey(evmAccount, 0, dep.index);
+			const depAccount = privateKeyToAccount(depPrivKey);
+			const depWallet = createWalletClient({
+				chain,
+				transport: http(RPC_URL),
+				account: depAccount,
+			});
 
-      for (const token of dep.tokenBalances) {
-        const hash = await depWallet.writeContract({
-          address: token.address,
-          abi: ERC20_ABI,
-          functionName: "transfer",
-          args: [treasuryAddress, token.balance],
-        });
-        console.log(`  [${dep.index}] Swept ${formatUnits(token.balance, token.decimals)} ${token.name}: ${hash}`);
-        await publicClient.waitForTransactionReceipt({ hash });
-      }
-    }
-  }
+			for (const token of dep.tokenBalances) {
+				const hash = await depWallet.writeContract({
+					address: token.address,
+					abi: ERC20_ABI,
+					functionName: "transfer",
+					args: [treasuryAddress, token.balance],
+				});
+				console.log(`  [${dep.index}] Swept ${formatUnits(token.balance, token.decimals)} ${token.name}: ${hash}`);
+				await publicClient.waitForTransactionReceipt({ hash });
+			}
+		}
+	}
 
-  // ============================================================
-  // Summary
-  // ============================================================
-  console.log("\n--- Final treasury balances ---");
-  const finalEth = await publicClient.getBalance({ address: treasuryAddress });
-  console.log(`  ETH: ${formatEther(finalEth)}`);
-  for (const token of TOKENS) {
-    const bal = await publicClient.readContract({
-      address: token.address,
-      abi: ERC20_ABI,
-      functionName: "balanceOf",
-      args: [treasuryAddress],
-    });
-    if (bal > 0n) console.log(`  ${token.name}: ${formatUnits(bal, token.decimals)}`);
-  }
-  console.log("\nDone.");
+	// ============================================================
+	// Summary
+	// ============================================================
+	console.log("\n--- Final treasury balances ---");
+	const finalEth = await publicClient.getBalance({ address: treasuryAddress });
+	console.log(`  ETH: ${formatEther(finalEth)}`);
+	for (const token of TOKENS) {
+		try {
+			const bal = await publicClient.readContract({
+				address: token.address,
+				abi: ERC20_ABI,
+				functionName: "balanceOf",
+				args: [treasuryAddress],
+			});
+			if (bal > 0n) console.log(`  ${token.name}: ${formatUnits(bal, token.decimals)}`);
+		} catch {
+			// skip
+		}
+	}
+	console.log("\nDone.");
 }
 
 main().catch((err) => {
-  console.error(err);
-  process.exit(1);
+	console.error(err);
+	process.exit(1);
 });

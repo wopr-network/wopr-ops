@@ -2204,29 +2204,58 @@ Derived from the same mnemonic on the internal chain (BIP-44 chain index 1), sep
 
 | Asset | Path | Address |
 |-------|------|---------|
-| EVM (ERC-20 + ETH) | `m/44'/60'/0'/1/0` | `0x6cEff0F47d5d918e50Fd40f7611f673a13edA06d` |
+| EVM (ERC-20 + ETH) | `m/44'/60'/0'/1/0` | `0x1965410B83e59490f88d63196dE2B6C2DED121a2` |
 | BTC | First internal address from xpub | (derived from the BTC xpub) |
+
+> **IMPORTANT: Address `0x6cEff0F47d5d918e50Fd40f7611f673a13edA06d` was previously listed here.
+> That address was derived from COMPRESSED public keys (buggy, pre platform-core 1.60.0).
+> The correct treasury is `0x1965...` derived via `privateKeyToAccount` (uncompressed).
+> Any funds sent to the old address are unrecoverable.**
 
 **Sweep protocol:**
 
-EVM sweep script: `wopr-ops/scripts/sweep-stablecoins.ts` (handles ETH + all ERC-20s)
+EVM sweep script: `wopr-ops/scripts/sweep-stablecoins.ts` (handles ETH + all ERC-20s on any EVM chain)
+
+The script fetches token config from the chain server — no hardcoded contracts. Add a new token to the chain server → it's automatically swept.
 
 ```bash
 # Dry run (default — scans balances, no transactions):
 openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d \
   -pass pass:<passphrase> -in "/mnt/g/My Drive/paperclip-wallet.enc" \
-  | EVM_RPC_BASE=http://localhost:8545 npx tsx scripts/sweep-stablecoins.ts
+  | CRYPTO_SERVICE_URL=http://167.71.118.221:3100 \
+    CRYPTO_SERVICE_KEY=sk-chain-2026 \
+    EVM_RPC=https://mainnet.base.org \
+    EVM_CHAIN=base \
+    npx tsx scripts/sweep-stablecoins.ts
 
 # Real sweep (broadcasts transactions):
 openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d \
   -pass pass:<passphrase> -in "/mnt/g/My Drive/paperclip-wallet.enc" \
-  | EVM_RPC_BASE=http://localhost:8545 SWEEP_DRY_RUN=false npx tsx scripts/sweep-stablecoins.ts
+  | CRYPTO_SERVICE_URL=http://167.71.118.221:3100 \
+    CRYPTO_SERVICE_KEY=sk-chain-2026 \
+    EVM_RPC=https://mainnet.base.org \
+    EVM_CHAIN=base \
+    SWEEP_DRY_RUN=false \
+    npx tsx scripts/sweep-stablecoins.ts
+
+# Sepolia testnet sweep:
+# EVM_RPC=https://ethereum-sepolia-rpc.publicnode.com EVM_CHAIN=sepolia
 ```
+
+**Required env vars:**
+| Var | Description |
+|-----|-------------|
+| `CRYPTO_SERVICE_URL` | Chain server URL (e.g. `http://167.71.118.221:3100`) |
+| `CRYPTO_SERVICE_KEY` | Chain server service key (Bearer auth) |
+| `EVM_RPC` | RPC endpoint for the chain to sweep |
+| `EVM_CHAIN` | Chain ID matching chain server (e.g. `base`, `sepolia`) |
+| `SWEEP_DRY_RUN` | Set to `false` to broadcast (default: `true`) |
+| `MAX_ADDRESSES` | Deposit addresses to scan (default: `200`) |
 
 **3-phase sweep (solves chicken-and-egg gas problem):**
 1. **Phase 1 — Sweep ETH deposits** (self-funded gas). Native ETH transfers cost 21k gas. The deposit address pays its own gas from its ETH balance. No treasury funding needed.
 2. **Phase 2 — Fund gas from treasury.** Treasury now has ETH from phase 1. Script tops up each ERC-20 deposit address with just enough ETH for one `transfer()` call (~65k gas, ~$0.004 on Base L2).
-3. **Phase 3 — Sweep all ERC-20s** (USDC, USDT, DAI). Each deposit address now has gas. Script signs `transfer()` from each deposit to treasury.
+3. **Phase 3 — Sweep all ERC-20s** (USDC, USDT, DAI, LINK, etc.). Each deposit address now has gas. Script signs `transfer()` from each deposit to treasury.
 
 **Why ETH-first:** If the treasury starts empty (no ETH for gas), you can't fund ERC-20 deposit addresses. But ETH deposits self-fund their own sweep. Sweeping ETH first fills the treasury, then you can fund gas for ERC-20 sweeps.
 
@@ -2235,6 +2264,12 @@ openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d \
 **BTC sweep:** Manual via wallet software (Electrum). Import xpub, sweep all to cold storage.
 
 **After sweep:** move funds from treasury to exchange or cold storage as needed.
+
+**Critical bug fixed (platform-core PR #144, 2026-03-24):**
+
+EVM deposit addresses were derived from SEC1 compressed public keys. `viem.publicKeyToAddress()` expects uncompressed (65 bytes, `04` prefix) but received compressed (33 bytes, `02`/`03` prefix). It strips the first byte and keccak256-hashes the rest — for compressed keys this hashes 32 bytes (just X coordinate) instead of 64 bytes (X+Y), producing a completely different address. No private key can sign for a compressed-key-derived address because Ethereum's ECDSA recovery always uses uncompressed public keys. Funds sent to these addresses are **permanently unrecoverable**.
+
+Fix: decompress via `secp256k1.Point.fromHex().toBytes(false)` in `address-gen.ts` before passing to `publicKeyToAddress`. All deposit addresses created after this fix are standard Ethereum addresses that can be swept.
 
 **Security rules:**
 - xpubs are public — safe in env vars, repos, logs

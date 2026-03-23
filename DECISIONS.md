@@ -573,3 +573,58 @@ doctl compute droplet-action power-on <id> --wait
 **Analysis:** At 7x markup on DeepSeek V3.2 (sell $0.001/1K input vs cost $0.00014/1K), a $5 free credit only costs ~$0.70 in real inference. Even if a user burns $5 and leaves, loss is 70 cents.
 
 **Decision:** Keep $5 on signup. Better conversion funnel. The math works regardless because of the markup.
+
+## 2026-03-24 — Crypto payment methods from chain server, not DB
+
+**Context:** The billing UI showed crypto payment methods from the local `payment_methods` DB table. Adding a new token required a DB insert + watcher config. The chain server already had a `/chains` API with all available tokens.
+
+**Decision:** `supportedPaymentMethods` tRPC route calls `cryptoClient.listChains()` directly. If the chain server has it, the UI shows it. No local DB config needed. Removed evmXpub/priceOracle/paymentMethodStore guards from checkout mutation — `createUnifiedCheckout` only needs `cryptoClient`.
+
+**Impact:** 14 tokens immediately available in billing UI. Adding new tokens is a chain server config change, zero platform code.
+
+## 2026-03-24 — Webhook auth: chain server uses SERVICE_KEY as Bearer
+
+**Context:** Chain server detected payments and confirmed charges, but webhook delivery to Paperclip returned 401. The delivery had no auth header. Paperclip's webhook endpoint required a Bearer token.
+
+**Decision:** Added `serviceKey` to `WatcherServiceOpts` in platform-core. Webhook outbox delivery sends `Authorization: Bearer <serviceKey>`. Paperclip webhook endpoint accepts both `PROVISION_SECRET` and `CRYPTO_SERVICE_KEY`.
+
+**Chain server keys:** `SERVICE_KEY=sk-chain-2026` (service ops, webhook auth), `ADMIN_TOKEN=ks-admin-2026` (admin ops, listing chains).
+
+## 2026-03-24 — Local charge storage for webhook crediting
+
+**Context:** Checkout created charges on the chain server only. When the webhook arrived, `handleCryptoWebhook` looked for the charge in the local DB — empty. Credits never added.
+
+**Decision:** After `createUnifiedCheckout`, store the charge locally via `cryptoChargeRepo.create(referenceId, tenantId, amountUsdCents)`. Webhook handler finds it → credits tenant ledger.
+
+## 2026-03-24 — CRITICAL: Compressed public key bug in EVM address derivation
+
+**Context:** EVM deposit addresses were derived by passing SEC1 compressed public keys (33 bytes, 02/03 prefix) to `viem.publicKeyToAddress()`. This function does `keccak256(pubkey.slice(2))` — strips the prefix byte and hashes. For compressed keys, it hashes 32 bytes (just X coordinate) instead of 64 bytes (X+Y). The resulting address is not a standard Ethereum address. No private key can sign for it because Ethereum's ECDSA recovery always uses uncompressed public keys.
+
+**Root cause:** `HDKey.publicKey` from `@scure/bip32` is always compressed. The `encodeEvm()` function in `address-gen.ts` passed it directly to `publicKeyToAddress` without decompressing.
+
+**Fix:** Decompress via `secp256k1.Point.fromHex(compressed).toBytes(false)` before hashing. Added `@noble/curves` as direct dependency. platform-core PR #144.
+
+**Impact:** All EVM deposit addresses created before this fix generated invalid addresses. Funds sent to them are permanently unrecoverable. All new addresses after the fix are standard and sweepable. Testnet LINK on Sepolia was lost (no real value).
+
+## 2026-03-24 — Product config DB seed required for platform-core 1.59.0
+
+**Context:** Platform-core 1.59.0 added `platformBoot()` which reads product config from a `products` DB table. Without the seed row, startup fails with "Product not found" and the platform runs in degraded mode — no auth, no billing, no crypto.
+
+**Decision:** Manually seeded via SQL INSERT. Needs a migration or seed script for production.
+
+```sql
+INSERT INTO products (slug, brand_name, product_name, tagline, domain, app_domain, cookie_domain, 
+  company_legal, price_label, default_image, email_support, email_privacy, email_legal, 
+  from_email, home_path, storage_prefix) 
+VALUES ('paperclip', 'Paperclip', 'Paperclip', 'AI agents that run your business.', 
+  'runpaperclip.com', 'app.runpaperclip.com', '.runpaperclip.com', 'Paperclip AI Inc.', 
+  '$5/month', 'ghcr.io/wopr-network/paperclip:latest', 'support@runpaperclip.com', 
+  'privacy@runpaperclip.com', 'legal@runpaperclip.com', 'noreply@runpaperclip.com', 
+  '/instances', 'paperclip') ON CONFLICT (slug) DO NOTHING;
+```
+
+## 2026-03-24 — Sweep script fetches tokens from chain server
+
+**Context:** Sweep script had hardcoded Base mainnet token addresses. Couldn't sweep other chains (Sepolia, future chains).
+
+**Decision:** Script now fetches `/chains` from chain server, filters by `EVM_CHAIN` env var. Adding a new token to the chain server = automatically swept. No code changes.
