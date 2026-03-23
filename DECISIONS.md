@@ -521,3 +521,55 @@ doctl compute droplet-action power-on <id> --wait
 **Decision:** Hoist `holyshipperFleetManager` as a module-level `let` variable, assign inside the worker pool block, reference via nullish coalesce in the interrogation service init. PR #250 on wopr-network/holyship.
 
 **Result:** Analyze provisions worker in ~2s, runs LLM calls through gateway (billed), completes in ~90s with config + gaps + flow editor.
+
+---
+
+## 2026-03-23 — Paperclip Electric Indigo rebrand
+
+**Context:** Paperclip UI was generic monochrome (black/white/gray). No brand identity. Looked like every other SaaS.
+
+**Decision:** "Electric Indigo" design system — pure black (#09090b) + electric indigo (#818cf8) accent. 3-tier typography: Space Grotesk (display), DM Sans (body), JetBrains Mono (code). Glassmorphic cards, atmospheric radial gradients, subtle grid pattern. Design mockups via ui-ux-pro-max skill + visual companion server.
+
+**Result:** Full rebrand across all pages — landing (gradient hero), unified auth (split-panel with pitch + tab toggle), dashboard, admin, instance detail, privacy, terms, pricing. Zero amber references remaining. OAuth buttons (GitHub + Google) live.
+
+---
+
+## 2026-03-23 — Unified auth page replaces separate login/signup
+
+**Context:** Two separate pages (/login and /signup) felt redundant. The split-panel signup design was too good to only show for signups.
+
+**Decision:** Single page at `/login` with tab toggle (Sign in / Create account). Split-panel layout: left = brand pitch (value props, $5 credit card), right = tabbed form. `?tab=signup` deep-links to create account. Removed `/signup` route entirely.
+
+**Result:** Cleaner funnel, one gorgeous screen. OAuth buttons shared below both forms.
+
+---
+
+## 2026-03-23 — GitHub + Google OAuth for Paperclip
+
+**Context:** Paperclip only had email/password auth. OAuth increases conversion and reduces friction.
+
+**Decision:** Create OAuth apps via agent-browser CDP (connecting to real Chrome on Windows). GitHub OAuth App + Google Cloud OAuth Client. Env vars in `.env` AND docker-compose.yml `environment:` block (both required — compose only passes vars explicitly listed).
+
+**Gotcha:** `docker restart` does NOT re-read env_file. Must use `docker compose up -d --force-recreate`.
+
+**Result:** Both providers live. Buttons render via `authSocialRouter` (platform-core 1.57.0) + tRPC batch fix (platform-ui-core 1.22.4).
+
+---
+
+## 2026-03-23 — tRPC batch 401 poisoning fix
+
+**Context:** OAuth buttons weren't rendering on login page despite API returning correct data. Root cause: `trpcFetchWithAuth` throws `UnauthorizedError` on ANY 401. On login page, auth queries naturally 401 (no session). The throw kills the entire batch response, preventing public queries like `enabledSocialProviders` from resolving.
+
+**Decision:** Skip the throw when `window.location.pathname.startsWith("/login")`. Let the 401 response pass through so the batch continues. Public queries resolve, auth queries fail gracefully.
+
+**Result:** OAuth buttons render on login page. 401 redirect still works on all other pages. Fix in platform-ui-core 1.22.4 (PR #56).
+
+---
+
+## 2026-03-23 — $5 signup credit math validation
+
+**Context:** Question: should we give $5 free on signup, or require a $10 purchase first then give $5?
+
+**Analysis:** At 7x markup on DeepSeek V3.2 (sell $0.001/1K input vs cost $0.00014/1K), a $5 free credit only costs ~$0.70 in real inference. Even if a user burns $5 and leaves, loss is 70 cents.
+
+**Decision:** Keep $5 on signup. Better conversion funnel. The math works regardless because of the markup.
