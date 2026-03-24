@@ -4,9 +4,41 @@
 
 ## Current State
 
-**Status:** PRODUCTION — all 4 products live. Chain server: BTC synced (snapshot chainstate, bg validation removed), LTC synced (migrated to main disk), DOGE syncing (~9%, on external volume). Disk 60%.
-**Last Updated:** 2026-03-23
-**Last Operation:** Chain server resize + LTC migration + disk cleanup (95%→60%). DOGE moved to external volume to sync.
+**Status:** PRODUCTION — all 4 products live + DB-driven product config. Chain server: BTC synced, LTC synced, DOGE syncing (~9%, on external volume). Disk 60%.
+**Last Updated:** 2026-03-24
+**Last Operation:** Product config DB migration shipped across all 4 products. Crypto checkout 4-step flow deployed. Paperclip E2E verified.
+
+## 2026-03-24 — Product Config DB Migration (all products)
+
+### What shipped (~20 PRs across 7 repos)
+
+**Core change:** ~46 product-configurable env vars moved to 6 DB tables. `platformBoot(slug, db)` auto-seeds on first deploy. Admin UI at `/admin/products`. Email sender from DB.
+
+**platform-core 1.63.0:** ProductConfigService, platformBoot, auto-seed presets, email overrides, tRPC router
+**platform-ui-core 1.26.0:** Admin products page, initBrandConfig, CryptoCheckout 4-step flow
+
+**All 4 products wired:**
+- paperclip-platform: deployed, verified E2E (admin page, instance creation, crypto checkout)
+- wopr-platform: merged
+- holyship: merged (ephemeral/none fleet config)
+- nemoclaw-platform: merged
+
+**Key behavioral changes:**
+- Products auto-seed from built-in presets — no manual seed scripts
+- Brand, domain, CORS, nav, fleet, email config all from DB
+- Admin can change nav items, features, fleet lifecycle, billing config at runtime (no redeploy)
+- Crypto checkout: amount → coin/chain picker → deposit QR → confirmation tracker (no more duplicate token buttons)
+
+### Deploy verification (paperclip production)
+```bash
+ssh deploy@68.183.160.201 "docker logs paperclip-platform-platform-api-1 2>&1 | grep 'Product config'"
+# Expected: "Product config loaded: Paperclip (runpaperclip.com)"
+```
+
+### Rollback
+If platformBoot fails, the app throws on startup with a clear error. To rollback: revert the platform-core dependency to pre-1.59.0. The old env-var path still works as fallback.
+
+---
 
 ## 2026-03-22 — Holy Ship E2E: Marketing Site + OAuth + Pipeline Dashboard
 

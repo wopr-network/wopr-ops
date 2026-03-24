@@ -273,3 +273,40 @@ doctl compute droplet-action power-on 559531609 --wait
 **Stripe dashboard (manual):** Account name + product name still say WOPR/NemoClaw — update in Stripe dashboard.
 
 **Rollback needed:** No
+
+---
+
+### 2026-03-24 17:00-22:30 UTC — Product Config DB Migration (all 4 products)
+
+**Repos:** platform-core, platform-ui-core, paperclip-platform, wopr-platform, holyship, nemoclaw-platform, paperclip-platform-ui
+**PRs:** ~20 across all repos
+
+**platform-core (v1.59.0→1.63.0):**
+- #138: 6 DB tables, ProductConfigService, tRPC router, seed script
+- #141: Auto-seed on first boot (built-in presets)
+- #142: Package exports entry for product-config
+- #147: getEmailClient from/replyTo overrides
+- #149: Tron keccak-b58check + batch block fetches + journal fix
+
+**platform-ui-core (v1.25.0→1.26.0):**
+- #61: Admin products page + initBrandConfig
+- #62: CryptoCheckout 4-step flow (amount→coin/chain→deposit QR→confirm)
+- #63: Wire CryptoCheckout into billing page (replaces old flat token bar)
+
+**Product backends (platformBoot + email wiring):**
+- paperclip-platform: on main, deployed to 68.183.160.201
+- wopr-platform: #828 merged
+- holyship: #254, #255 merged
+- nemoclaw-platform: #19, #20 merged
+
+**paperclip-platform-ui:** bumped to platform-ui-core 1.26.0, deployed to 68.183.160.201
+
+**Verified E2E on Paperclip production:**
+- Admin products page live at /admin/products (all fields from DB)
+- Instance creation + provisioning works
+- Crypto checkout (BTC) generates address, oracle pricing correct
+- 4-step crypto flow deployed
+
+**Result:** Success
+**Rollback needed:** No
+**Notes:** platformBoot auto-seeds on first deploy — no manual seed scripts needed. Migration 0020 creates 6 product config tables. pnpm upgraded to 10.33.0 on paperclip-platform.
