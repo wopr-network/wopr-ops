@@ -2265,6 +2265,21 @@ openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d \
 
 **After sweep:** move funds from treasury to exchange or cold storage as needed.
 
+**E2E verified (2026-03-24, Sepolia testnet):**
+```
+Checkout → deposit 0xA8eD...766e (index 11, 1.1 LINK)
+Chain server → detected → confirmed (1/1) → webhook delivered
+Paperclip → webhook received → charge settled → $10 credited
+Sweep script → found deposit → funded gas → swept 1.1 LINK to treasury
+Treasury → sent 1.1 LINK to 0x...dEaD (tx 0x4e859...347a0, success)
+```
+Full chain of custody: pay → detect → credit → sweep → spend. Bulletproof.
+
+**Known issues:**
+- `polygon-rpc.com` returns 401 — polygon payment methods disabled. Chain server crashes if any watcher RPC fails auth (needs resilient startup).
+- Old deposit addresses (pre platform-core PR #144) used compressed-key derivation and are unrecoverable.
+- Product config requires DB seed row (`INSERT INTO products ...`) — not yet in migrations.
+
 **Critical bug fixed (platform-core PR #144, 2026-03-24):**
 
 EVM deposit addresses were derived from SEC1 compressed public keys. `viem.publicKeyToAddress()` expects uncompressed (65 bytes, `04` prefix) but received compressed (33 bytes, `02`/`03` prefix). It strips the first byte and keccak256-hashes the rest — for compressed keys this hashes 32 bytes (just X coordinate) instead of 64 bytes (X+Y), producing a completely different address. No private key can sign for a compressed-key-derived address because Ethereum's ECDSA recovery always uses uncompressed public keys. Funds sent to these addresses are **permanently unrecoverable**.
