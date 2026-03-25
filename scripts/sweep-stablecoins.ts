@@ -1,18 +1,18 @@
 #!/usr/bin/env npx tsx
 /**
- * Crypto sweep tool — consolidates ETH + ERC-20s from deposit addresses to treasury.
+ * @deprecated Use `crypto-sweep` from @wopr-network/crypto-plugins instead.
+ *
+ * Install: pnpm add -g @wopr-network/crypto-plugins
+ * Usage:   openssl enc ... | CRYPTO_SERVICE_URL=... crypto-sweep
+ *
+ * The unified CLI handles all chains (EVM, Tron, UTXO, Solana) automatically
+ * by reading chain config from the chain server. No per-chain env vars needed.
+ *
+ * ---
+ *
+ * LEGACY: Crypto sweep tool — consolidates ETH + ERC-20s from deposit addresses to treasury.
  *
  * RUNS LOCALLY ONLY. Never on the server. Handles private keys.
- *
- * Fetches token list from the chain server — no hardcoded contracts.
- * Add a new token to the chain server → it's automatically swept.
- *
- * Order matters (chicken-and-egg):
- *   1. Sweep ETH first — deposit addresses self-fund gas, treasury receives ETH
- *   2. Fund gas — treasury sends ETH to ERC-20 deposit addresses
- *   3. Sweep ERC-20s — deposit addresses send all tokens to treasury
- *
- * Without step 1, the treasury may have no ETH to fund gas for step 2.
  *
  * Usage:
  *   openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -d -pass pass:<passphrase> \
@@ -22,15 +22,8 @@
  *       EVM_RPC=https://ethereum-sepolia-rpc.publicnode.com \
  *       EVM_CHAIN=sepolia \
  *       npx tsx scripts/sweep-stablecoins.ts
- *
- * Env vars:
- *   CRYPTO_SERVICE_URL  — Chain server URL (required)
- *   CRYPTO_SERVICE_KEY  — Chain server auth key (required)
- *   EVM_RPC             — RPC endpoint for the chain to sweep (required)
- *   EVM_CHAIN           — Chain ID to sweep (e.g. "base", "sepolia") (required)
- *   SWEEP_DRY_RUN       — set to "false" to actually broadcast (default: true)
- *   MAX_ADDRESSES       — how many deposit addresses to scan (default: 200)
  */
+console.warn("⚠️  DEPRECATED: Use `crypto-sweep` from @wopr-network/crypto-plugins instead.");
 
 import { HDKey } from "@scure/bip32";
 import * as bip39 from "@scure/bip39";
