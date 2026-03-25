@@ -423,6 +423,43 @@ doctl compute droplet-action power-on <id> --wait
 
 ---
 
+## 2026-03-24 — Staging on same VPS with Watchtower auto-deploy
+
+**Context:** No staging environment existed. Every change went straight to prod. Need a way to test before promoting, without extra droplets.
+
+**Decision:** Run staging alongside prod on the same VPS using compose overlays. Watchtower auto-pulls new images. Promote via GitHub Actions `workflow_dispatch` that retags `:staging` → `:latest`.
+
+**Architecture:**
+- Each VPS has `docker-compose.yml` (prod) + `docker-compose.staging.yml` (staging overlay)
+- Staging services: `staging-postgres`, `staging-api`, `staging-ui` — separate DB, separate auth secret
+- Caddy routes `staging.<domain>` to staging containers
+- Watchtower polls GHCR every 60s, auto-restarts on new images
+- CI pushes `:staging` tag → Watchtower pulls → staging updates
+- Promote workflow retags `:staging` → `:latest` → Watchtower pulls → prod updates
+
+**Staging env differences:**
+- `EMAIL_DISABLED=true` — no emails sent
+- `SKIP_EMAIL_VERIFICATION=true` — signup skips verification
+- Separate `STAGING_BETTER_AUTH_SECRET` — sessions isolated from prod
+- `NODE_ENV=staging`
+- DB seeded from prod snapshot at deploy time
+
+**DNS:** `staging.*`, `staging.api.*`, `staging.app.*` A records for all 4 domains → same droplet IPs.
+
+**Promote:** `gh workflow run promote --field product=<name>` from wopr-ops repo.
+
+---
+
+## 2026-03-24 — Watchtower for auto-deploy
+
+**Context:** Manual SSH + `docker compose pull` + `docker compose up -d` for every deploy. Tedious and error-prone.
+
+**Decision:** Watchtower on all 4 VPSes. Polls GHCR every 60s, auto-pulls new images, recreates containers. GHCR auth via `/root/.docker/config.json`.
+
+**Tradeoff:** 60s max delay between image push and deploy. Acceptable for our scale. If we need instant deploys, switch to webhook-triggered.
+
+---
+
 ## 2026-03-22 — Health check window: 30 retries x 2s for first-boot migrations
 
 **Context:** Paperclip tenant instances run 29 Drizzle schema migrations on first boot. The default Docker health check (3 retries x 30s interval) declares the container unhealthy before migrations finish.

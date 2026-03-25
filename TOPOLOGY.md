@@ -92,12 +92,16 @@ Internet
        └─ api.wopr.bot    → 138.68.30.247
 
 VPS (DigitalOcean — wopr-platform, 138.68.30.247)
-  └─ /opt/wopr-platform/docker-compose.yml (synced to wopr-ops/vps/wopr/)
+  └─ /opt/wopr-platform/docker-compose.yml + docker-compose.staging.yml
        ├─ caddy (custom build w/ cloudflare DNS)  (80, 443)
-       │    ├─ wopr.bot           → platform-ui:3000
-       │    ├─ app.wopr.bot       → platform-ui:3000
-       │    ├─ api.wopr.bot       → platform-api:3100
-       │    └─ *.wopr.bot         → platform-api:3100
+       │    ├─ wopr.bot               → platform-ui:3000
+       │    ├─ app.wopr.bot           → platform-ui:3000
+       │    ├─ api.wopr.bot           → platform-api:3100
+       │    ├─ *.wopr.bot             → platform-api:3100
+       │    ├─ staging.wopr.bot       → staging-ui:3000
+       │    ├─ staging.app.wopr.bot   → staging-ui:3000
+       │    └─ staging.api.wopr.bot   → staging-api:3100
+       ├─ watchtower (polls GHCR every 60s, auto-restarts on new images)
        ├─ platform-api (ghcr.io/wopr-network/wopr-platform:latest)  (3100)
        │    ├─ Docker socket mounted → spawns tenant containers
        │    ├─ wopr daemon (onboarding) on port 3847
