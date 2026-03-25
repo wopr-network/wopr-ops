@@ -402,35 +402,24 @@ doctl compute droplet-action power-on <id> --wait
 
 ---
 
-## 2026-03-22 — AWS SES replaces Resend for transactional email
+## 2026-03-24 — Postmark replaces AWS SES for transactional email
 
-**Context:** All 4 products used Resend for transactional email (verification, notifications, password reset). Resend charges per email after the free tier, requires a per-domain API key, and has no automation API for domain verification. With 4 products and growing, this doesn't scale.
+**Context:** Switched from SES to Postmark. SES sandbox mode was blocking sends to unverified recipients and production access approval was pending indefinitely. Postmark has no sandbox — verified domains can send immediately.
 
-**Decision:** AWS SES as the primary email transport. One AWS account (264991295931), one IAM user (`ses-admin`), one region (`us-east-1`). `platform-core` v1.51.0 adds `SesTransport` that auto-selects SES when `AWS_SES_REGION` is set, falls back to Resend when absent.
+**Decision:** Postmark as the sole email transport. One Postmark account, one server ("Paperclip"), one server token shared across all products. Replaces both SES and Resend.
 
-**Why SES over Resend:**
-- **Cost:** SES is $0.10/1,000 emails with no monthly minimum. Resend free tier caps at 100 emails/day, then $20/mo for 50k. At our volume (low hundreds/day across 4 products), SES is effectively free.
-- **Automation:** `ses-verify-domain.sh` script verifies a domain and adds all DNS records (verification TXT, 3 DKIM CNAMEs, SPF) to Cloudflare in one command. Resend requires manual dashboard clicks per domain.
-- **Single credential set:** One IAM user serves all 4 products. Resend needs a separate API key per sending domain.
-- **Deliverability:** SES has dedicated IP pools, suppression list management, and bounce/complaint dashboards. Resend abstracts these away with less control.
+**Why Postmark over SES:**
+- **No sandbox** — verified domains send immediately, no AWS production access approval wait.
+- **Simpler credentials** — one `POSTMARK_API_KEY` env var vs three AWS vars (`AWS_SES_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
+- **Better deliverability defaults** — dedicated IP pool, automatic DKIM rotation, built-in suppression management.
+- **Cost:** $15/mo for 10,000 emails. At our volume this is negligible.
 
-**Tradeoff:** SES starts in sandbox mode — can only send to verified recipients until AWS approves production access. Resend works immediately. During the transition, keep `RESEND_API_KEY` as fallback.
-
-**Rollout plan:**
-
-| Phase | Products | Prereq | Action |
-|-------|----------|--------|--------|
-| 1 | Paperclip | SES env vars already in .env | Bump platform-core to 1.51.0, rebuild image, restart |
-| 2 | WOPR + HolyShip | SES production access approved | Add SES env vars, bump platform-core, deploy |
-| 3 | Nemoclaw + cleanup | Phase 2 stable | Verify nemoclaw domain (`ses-verify-domain.sh`), deploy, remove Resend deps, cancel Resend subscription |
-
-**Current state (2026-03-23):**
-- 3 domains verified in SES: `runpaperclip.com`, `wopr.bot`, `holyship.wtf`
-- DNS records (DKIM + SPF + verification) added to Cloudflare for all 3
-- Test email confirmed: `noreply@runpaperclip.com` → `tsavo@wopr.bot`
-- SES production access: requested, pending approval (sandbox = 200 emails/day, verified recipients only)
-- **Phase 1 COMPLETE (2026-03-23):** Paperclip running on SES. platform-core 1.56.0 deployed. `getEmailClient()` auto-selects SES. `RESEND_API_KEY` commented out in production .env. API log confirms: `"Email client initialized with AWS SES"`.
-- **Important:** Consumers must use `getEmailClient()` (singleton with auto-detection), NOT `new EmailClient({ apiKey })` which hardcodes Resend.
+**Migration (2026-03-24):**
+- Removed AWS SES env vars from all products
+- Added `POSTMARK_API_KEY` to Paperclip `.env.production`
+- 5 domains verified in Postmark (SPF + DKIM + Return-Path): `nefariousplan.com`, `runpaperclip.com`, `wopr.bot`, `holyship.wtf`, `nemopod.com`
+- DNS records (DKIM TXT + Return-Path CNAME) added to Cloudflare for all domains
+- **All products can now send email from any verified domain** — no phased rollout needed
 
 ---
 

@@ -55,8 +55,8 @@ services:
       - STRIPE_CREDIT_PRICE_25=${STRIPE_CREDIT_PRICE_25}
       - STRIPE_CREDIT_PRICE_50=${STRIPE_CREDIT_PRICE_50}
       - STRIPE_CREDIT_PRICE_100=${STRIPE_CREDIT_PRICE_100}
-      - RESEND_API_KEY=${RESEND_API_KEY}
-      - RESEND_FROM_EMAIL=noreply@wopr.bot
+      - POSTMARK_API_KEY=${POSTMARK_API_KEY}
+      - EMAIL_FROM=noreply@wopr.bot
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
       - BETTER_AUTH_URL=https://api.wopr.bot
       - UI_ORIGIN=https://wopr.bot,https://app.wopr.bot

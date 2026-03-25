@@ -61,7 +61,7 @@ platform-core (npm package — v1.50+)
     │    ├── X-Attribute-To header for cross-tenant attribution
     │    └── Usage sanitized to standard OpenAI format (strips OpenRouter extras)
     ├── Org/tenant isolation (DrizzleOrgMemberRepository)
-    ├── Notification pipeline (SES primary, Resend fallback; 29 templates, 30s poll)
+    ├── Notification pipeline (Postmark; 29 templates, 30s poll)
     ├── tRPC router factories (billing, org, settings, profile)
     └── Drizzle ORM (shared Postgres schema + migrations)
 
@@ -603,61 +603,49 @@ console.log(root.derive(\"m/44'/60'/N'\").publicExtendedKey);
 
 **Why account-level xpubs:** Each deployment holds only its branch. A server compromise exposes only that platform's address space. Addresses are mathematically disjoint — no code or config error can produce collisions.
 
-## AWS SES Email Infrastructure
+## Postmark Email Infrastructure
 
-Transactional email for all products. AWS account `264991295931`, IAM user `ses-admin` (AmazonSESFullAccess policy). Region: `us-east-1`.
+Transactional email for all products. Postmark account with one server ("Paperclip"). Switched from AWS SES on 2026-03-24.
 
-**IMPORTANT:** Consumers must use `getEmailClient()` from `@wopr-network/platform-core/email`, NOT `new EmailClient({ apiKey })`. The singleton auto-detects SES vs Resend from env vars.
+**IMPORTANT:** Consumers must use `getEmailClient()` from `@wopr-network/platform-core/email`. The singleton reads `POSTMARK_API_KEY` from env vars.
 
 ```
-platform-core getEmailClient() (v1.51.0+)
-    ├── Priority 1: SES — when AWS_SES_REGION is set
-    ├── Priority 2: Resend — when RESEND_API_KEY is set
-    ├── Reads EMAIL_FROM (default: noreply@wopr.bot)
-    ├── Reads EMAIL_REPLY_TO (default: support@wopr.bot)
-    └── Legacy RESEND_FROM / RESEND_REPLY_TO still work as fallback
+Postmark Account
+    ├── Server: "Paperclip" (ID: 18634118)
+    └── Server Token: POSTMARK_API_KEY env var
 
-Required env vars for SES:
-    AWS_SES_REGION=us-east-1
-    AWS_ACCESS_KEY_ID=...          (from ses-admin IAM user)
-    AWS_SECRET_ACCESS_KEY=...
-    EMAIL_FROM=noreply@<domain>
-    EMAIL_REPLY_TO=support@<domain>
-
-AWS SES (us-east-1)
-    ├── runpaperclip.com  — verified, ACTIVE (Paperclip uses SES as of 2026-03-23)
-    ├── wopr.bot          — verified (awaiting Phase 2)
-    ├── holyship.wtf      — verified (awaiting Phase 2)
-    └── nemopod.com       — not yet verified
+Verified Domains (all fully verified — SPF + DKIM + Return-Path):
+    ├── nefariousplan.com  (ID: 4327947)
+    ├── runpaperclip.com   (ID: 4327991)
+    ├── wopr.bot           (ID: 4329612)
+    ├── holyship.wtf       (ID: 4329613)
+    └── nemopod.com        (ID: 4329614)
 
 Product status:
-    ├── Paperclip  — SES ACTIVE, Resend disabled (Phase 1 complete 2026-03-23)
-    ├── WOPR       — Resend (awaiting SES production access for Phase 2)
-    ├── HolyShip   — Resend (awaiting Phase 2)
-    └── Nemoclaw   — no email configured (Phase 3)
+    ├── Paperclip  — Postmark ACTIVE (POSTMARK_API_KEY in .env)
+    ├── WOPR       — Postmark (add POSTMARK_API_KEY to .env)
+    ├── HolyShip   — Postmark (add POSTMARK_API_KEY to .env)
+    └── NemoClaw   — Postmark (add POSTMARK_API_KEY to .env)
 
-DNS (Cloudflare)
-    Per domain:
-    ├── _amazonses.<domain> TXT  (SES domain verification token)
-    ├── 3x CNAME              (DKIM: <selector>._domainkey.<domain> → <selector>.dkim.amazonses.com)
-    └── TXT "v=spf1 include:amazonses.com ~all"  (SPF)
+DNS (Cloudflare) per domain:
+    ├── TXT <selector>._domainkey.<domain>  (DKIM RSA public key)
+    ├── CNAME pm-bounces.<domain> → pm.mtasv.net  (Return-Path)
+    └── SPF auto-verified via Postmark (include:spf.mtasv.net)
 ```
 
-### SES Env Vars (per product)
+### Postmark Env Vars (per product)
 
 | Variable | Example | Notes |
 |----------|---------|-------|
-| `AWS_SES_REGION` | `us-east-1` | Presence triggers SES transport |
-| `AWS_ACCESS_KEY_ID` | `AKIA...` | IAM user `ses-admin` |
-| `AWS_SECRET_ACCESS_KEY` | (secret) | IAM user `ses-admin` |
-| `EMAIL_FROM` | `noreply@runpaperclip.com` | Sender address (new unified var) |
+| `POSTMARK_API_KEY` | `933c7517-...` | Server token (same for all products sharing one server) |
+| `EMAIL_FROM` | `noreply@runpaperclip.com` | Sender address (must match a verified domain) |
 | `EMAIL_REPLY_TO` | `support@runpaperclip.com` | Reply-to (optional) |
-| `RESEND_API_KEY` | `re_...` | Fallback — used only when SES vars absent |
 
-### SES Production Access
+### Cloudflare Zone IDs (for DNS management)
 
-SES starts in **sandbox mode** — can only send to verified recipient addresses. Production access requested (pending AWS approval). Once approved, all verified domains can send to any recipient.
-
-### Verification Script
-
-`scripts/ses-verify-domain.sh <domain> <cloudflare-zone-id>` — verifies domain in SES, retrieves DKIM tokens, adds all DNS records to Cloudflare via API. Requires `aws` CLI + `CF_API_TOKEN` env var.
+| Domain | Zone ID |
+|--------|---------|
+| runpaperclip.com | `c2ac899c5e55d3ac150197a18effadf2` |
+| wopr.bot | `c1dc2cc96846e1d7bf8606009f9a6f9e` |
+| holyship.wtf | `7f8313ed0ec8e1df1072ba5b49f86880` |
+| nemopod.com | `7f9adcf4e1303537345936098b0007bc` |

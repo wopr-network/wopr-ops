@@ -2611,89 +2611,58 @@ docker restart holyship-caddy   # (or the appropriate project prefix)
 **Why:** 4GB RAM only needed during IBD. Post-sync, tip chain uses ~300MB. 2GB + swap is plenty.
 **Check IBD progress:** `ssh root@pay.wopr.bot 'docker exec chain-server-bitcoind-1 bitcoin-cli -rpcuser=btcpay -rpcpassword=btcpay-chain-2026 getchainstates'` — when only 1 chainstate remains, IBD is done.
 
-## AWS SES Email Operations
+## Postmark Email Operations
 
-### Verify a new domain
+### Add a new domain
 
 ```bash
-# Requires: aws CLI configured, CF_API_TOKEN env var, Cloudflare zone ID
-cd ~/wopr-ops
-./scripts/ses-verify-domain.sh <domain> <cloudflare-zone-id>
+# Use Postmark Account API to add domain + set up DNS via Cloudflare
+# Account token: b980b6fa-af7c-4ef9-9170-ab36414ada36
+# See /tmp or script inline — POST to https://api.postmarkapp.com/domains
 
-# Verify DNS propagation (may take 5-30 minutes)
-aws ses get-identity-verification-attributes \
-  --identities <domain> --region us-east-1
+# After adding, create DNS records in Cloudflare:
+# 1. TXT record: <selector>._domainkey.<domain> → DKIM public key from Postmark response
+# 2. CNAME record: pm-bounces.<domain> → pm.mtasv.net
 
-# Check DKIM status
-aws ses get-identity-dkim-attributes \
-  --identities <domain> --region us-east-1
+# Trigger verification:
+# PUT https://api.postmarkapp.com/domains/<id>/verifyDkim
+# PUT https://api.postmarkapp.com/domains/<id>/verifyReturnPath
 ```
 
-### Check SES sending status
+### Check domain status
 
 ```bash
-# Check if still in sandbox
-aws ses get-account --region us-east-1
-# Look for: "ProductionAccessEnabled": true
-
-# Check verified domains
-aws ses list-identities --identity-type Domain --region us-east-1
-
-# Check send quota and usage
-aws ses get-send-quota --region us-east-1
+# List all domains and verification status
+node -e '
+fetch("https://api.postmarkapp.com/domains?count=50&offset=0", {
+  headers: { "Accept": "application/json", "X-Postmark-Account-Token": "b980b6fa-af7c-4ef9-9170-ab36414ada36" }
+}).then(r => r.json()).then(d => console.log(JSON.stringify(d, null, 2)));
+'
 ```
 
-### Troubleshoot email delivery
+### Verified domains (as of 2026-03-24)
+
+| Domain | ID | SPF | DKIM | Return-Path |
+|--------|----|-----|------|-------------|
+| nefariousplan.com | 4327947 | yes | yes | yes |
+| runpaperclip.com | 4327991 | yes | yes | yes |
+| wopr.bot | 4329612 | yes | yes | yes |
+| holyship.wtf | 4329613 | yes | yes | yes |
+| nemopod.com | 4329614 | yes | yes | yes |
+
+### Switch a product to Postmark
+
+Add this env var to the product's `.env` / docker-compose:
 
 ```bash
-# Check bounce/complaint rates (must stay under 5% bounce, 0.1% complaint)
-aws ses get-send-statistics --region us-east-1
-
-# Check specific domain verification status
-aws ses get-identity-verification-attributes \
-  --identities runpaperclip.com wopr.bot holyship.wtf --region us-east-1
-
-# Test sending (sandbox: recipient must be verified)
-aws ses send-email --region us-east-1 \
-  --from "noreply@runpaperclip.com" \
-  --destination "ToAddresses=tsavo@wopr.bot" \
-  --message "Subject={Data=Test},Body={Text={Data=SES test from CLI}}"
-
-# Check suppression list (addresses that bounced)
-aws sesv2 list-suppressed-destinations --region us-east-1
-```
-
-### SES sandbox limitations
-
-While in sandbox mode:
-- Can only send to **verified email addresses** (not just verified domains)
-- Max 200 emails/day, 1 email/second
-- Verify individual test recipients: `aws ses verify-email-identity --email-address user@example.com --region us-east-1`
-
-After production access approved:
-- 50,000 emails/day (soft limit, can request increase)
-- 14 emails/second
-- Can send to any recipient
-
-### Switch a product from Resend to SES
-
-Add these env vars to the product's `.env` / docker-compose:
-
-```bash
-AWS_SES_REGION=us-east-1
-AWS_ACCESS_KEY_ID=<ses-admin key>
-AWS_SECRET_ACCESS_KEY=<ses-admin secret>
+POSTMARK_API_KEY=933c7517-5a0c-429b-99fd-299ee5ad037c
 EMAIL_FROM=noreply@<domain>
 EMAIL_REPLY_TO=support@<domain>
 ```
 
-`platform-core` v1.51.0+ auto-detects `AWS_SES_REGION` and uses SES. If absent, falls back to Resend (`RESEND_API_KEY`). Keep `RESEND_API_KEY` during transition as a safety net.
+### Postmark Gotchas
 
-### SES Gotchas
-
-- **DKIM propagation takes up to 72 hours** — usually 5-30 minutes, but AWS docs say up to 72h. Don't panic.
-- **SPF record conflicts** — if the domain already has an SPF record, merge `include:amazonses.com` into the existing record. Two SPF TXT records on the same domain = both fail.
-- **Sandbox mode is per-region** — production access in `us-east-1` doesn't apply to `eu-west-1`.
-- **Bounce rate over 5% triggers automatic sending pause** — monitor via `aws ses get-send-statistics`.
-- **`EMAIL_FROM` must match a verified domain** — sending from an unverified domain returns `MessageRejected`.
-- **IAM user `ses-admin` has full SES access** — scope down to `ses:SendEmail` + `ses:SendRawEmail` after rollout stabilizes.
+- **DKIM propagation** — usually 1-5 minutes via Cloudflare, but can take up to 48h in edge cases.
+- **`EMAIL_FROM` must match a verified domain** — sending from an unverified domain returns a 422 error.
+- **Bounce rate over 10% triggers account review** — monitor via Postmark dashboard Activity tab.
+- **Server token is shared** — all products use the same Postmark server token. Sender domain controls which "from" address is used.

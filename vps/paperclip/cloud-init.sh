@@ -133,8 +133,8 @@ services:
       - STRIPE_CREDIT_PRICE_25=${STRIPE_CREDIT_PRICE_25}
       - STRIPE_CREDIT_PRICE_50=${STRIPE_CREDIT_PRICE_50}
       - STRIPE_CREDIT_PRICE_100=${STRIPE_CREDIT_PRICE_100}
-      - RESEND_API_KEY=${RESEND_API_KEY}
-      - RESEND_FROM_EMAIL=noreply@runpaperclip.com
+      - POSTMARK_API_KEY=${POSTMARK_API_KEY}
+      - EMAIL_FROM=noreply@runpaperclip.com
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
       - BETTER_AUTH_URL=https://api.runpaperclip.com
       - UI_ORIGIN=https://runpaperclip.com,https://app.runpaperclip.com
