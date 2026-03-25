@@ -1,0 +1,74 @@
+name: Promote staging → production
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: Product to promote
+        required: true
+        type: choice
+        options:
+          - paperclip
+          - wopr
+          - holyship
+          - nemoclaw
+          - all
+
+env:
+  REGISTRY: ghcr.io/wopr-network
+
+jobs:
+  promote:
+    runs-on: self-hosted
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve images to promote
+        id: images
+        run: |
+          case "${{ inputs.product }}" in
+            paperclip)
+              echo "images=paperclip-platform paperclip-platform-ui" >> "$GITHUB_OUTPUT"
+              ;;
+            wopr)
+              echo "images=wopr-platform wopr-platform-ui" >> "$GITHUB_OUTPUT"
+              ;;
+            holyship)
+              echo "images=holyship holyship-ui" >> "$GITHUB_OUTPUT"
+              ;;
+            nemoclaw)
+              echo "images=nemoclaw-platform nemoclaw-platform-ui" >> "$GITHUB_OUTPUT"
+              ;;
+            all)
+              echo "images=paperclip-platform paperclip-platform-ui wopr-platform wopr-platform-ui holyship holyship-ui nemoclaw-platform nemoclaw-platform-ui" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Retag :staging → :latest
+        run: |
+          for img in ${{ steps.images.outputs.images }}; do
+            echo "Promoting $REGISTRY/$img:staging → :latest"
+            docker pull "$REGISTRY/$img:staging"
+            docker tag  "$REGISTRY/$img:staging" "$REGISTRY/$img:latest"
+            docker push "$REGISTRY/$img:latest"
+            echo "✓ $img promoted"
+          done
+
+      - name: Summary
+        run: |
+          echo "## Promoted to production" >> "$GITHUB_SUMMARY"
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "**Product:** ${{ inputs.product }}" >> "$GITHUB_SUMMARY"
+          echo "**Images:**" >> "$GITHUB_SUMMARY"
+          for img in ${{ steps.images.outputs.images }}; do
+            echo "- \`$REGISTRY/$img:staging\` → \`:latest\`" >> "$GITHUB_SUMMARY"
+          done
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "Watchtower will pull and restart within 60s." >> "$GITHUB_SUMMARY"

@@ -93,6 +93,17 @@ services:
       retries: 3
     restart: unless-stopped
 
+  watchtower:
+    image: containrrr/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker/config.json:/config.json:ro
+    environment:
+      - WATCHTOWER_POLL_INTERVAL=60
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_STOPPED=false
+    restart: unless-stopped
+
 volumes:
   caddy_data:
   caddy_config:

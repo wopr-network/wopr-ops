@@ -1,0 +1,80 @@
+services:
+  staging-postgres:
+    image: postgres:16-alpine
+    volumes:
+      - staging_postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=paperclip
+      - POSTGRES_PASSWORD=${STAGING_POSTGRES_PASSWORD:-staging-pw}
+      - POSTGRES_DB=paperclip_platform
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  staging-api:
+    image: ghcr.io/wopr-network/paperclip-platform:staging
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - staging_platform_data:/data
+    depends_on:
+      staging-postgres:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://paperclip:${STAGING_POSTGRES_PASSWORD:-staging-pw}@staging-postgres:5432/paperclip_platform
+      - METER_WAL_PATH=/data/meter-wal.jsonl
+      - METER_DLQ_PATH=/data/meter-dlq.jsonl
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STAGING_STRIPE_WEBHOOK_SECRET:-${STRIPE_WEBHOOK_SECRET}}
+      - STRIPE_DEFAULT_PRICE_ID=${STRIPE_DEFAULT_PRICE_ID}
+      - STRIPE_CREDIT_PRICE_5=${STRIPE_CREDIT_PRICE_5}
+      - STRIPE_CREDIT_PRICE_10=${STRIPE_CREDIT_PRICE_10}
+      - STRIPE_CREDIT_PRICE_25=${STRIPE_CREDIT_PRICE_25}
+      - STRIPE_CREDIT_PRICE_50=${STRIPE_CREDIT_PRICE_50}
+      - STRIPE_CREDIT_PRICE_100=${STRIPE_CREDIT_PRICE_100}
+      - EMAIL_DISABLED=true
+      - SKIP_EMAIL_VERIFICATION=true
+      - BETTER_AUTH_SECRET=${STAGING_BETTER_AUTH_SECRET}
+      - BETTER_AUTH_URL=https://staging.api.runpaperclip.com
+      - UI_ORIGIN=https://staging.runpaperclip.com,https://staging.app.runpaperclip.com
+      - PLATFORM_DOMAIN=staging.runpaperclip.com
+      - COOKIE_DOMAIN=.staging.runpaperclip.com
+      - PLATFORM_SECRET=${STAGING_PLATFORM_SECRET:-${PLATFORM_SECRET}}
+      - PLATFORM_ENCRYPTION_SECRET=${STAGING_PLATFORM_ENCRYPTION_SECRET:-${PLATFORM_ENCRYPTION_SECRET}}
+      - PAPERCLIP_IMAGE=ghcr.io/wopr-network/paperclip:managed
+      - DO_API_TOKEN=${DO_API_TOKEN}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - GATEWAY_DEFAULT_MODEL=deepseek/deepseek-v3.2
+      - CRYPTO_SERVICE_URL=${CRYPTO_SERVICE_URL:-http://167.71.118.221:3100}
+      - CRYPTO_SERVICE_KEY=${CRYPTO_SERVICE_KEY}
+      - TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS:-172.16.0.0/12}
+      - FLEET_API_TOKEN=${FLEET_API_TOKEN:-paperclip_fleet_default}
+      - PROVISION_SECRET=${PROVISION_SECRET}
+      - GATEWAY_URL=${GATEWAY_URL}
+      - FLEET_DOCKER_NETWORK=${FLEET_DOCKER_NETWORK}
+      - NODE_ENV=staging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  staging-ui:
+    image: ghcr.io/wopr-network/paperclip-platform-ui:staging
+    environment:
+      - NEXT_PUBLIC_API_URL=https://staging.api.runpaperclip.com
+      - BETTER_AUTH_URL=https://staging.api.runpaperclip.com
+      - NEXT_PUBLIC_APP_DOMAIN=staging.app.runpaperclip.com
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  staging_postgres_data:
+  staging_platform_data:

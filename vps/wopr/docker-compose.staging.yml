@@ -1,0 +1,77 @@
+services:
+  staging-postgres:
+    image: postgres:16-alpine
+    volumes:
+      - staging_postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=wopr
+      - POSTGRES_PASSWORD=${STAGING_POSTGRES_PASSWORD:-staging-pw}
+      - POSTGRES_DB=wopr_platform
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wopr"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  staging-api:
+    image: ghcr.io/wopr-network/wopr-platform:staging
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - staging_platform_data:/data
+    depends_on:
+      staging-postgres:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://wopr:${STAGING_POSTGRES_PASSWORD:-staging-pw}@staging-postgres:5432/wopr_platform
+      - METER_WAL_PATH=/data/meter-wal.jsonl
+      - METER_DLQ_PATH=/data/meter-dlq.jsonl
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STAGING_STRIPE_WEBHOOK_SECRET:-${STRIPE_WEBHOOK_SECRET}}
+      - STRIPE_DEFAULT_PRICE_ID=${STRIPE_DEFAULT_PRICE_ID}
+      - STRIPE_CREDIT_PRICE_5=${STRIPE_CREDIT_PRICE_5}
+      - STRIPE_CREDIT_PRICE_10=${STRIPE_CREDIT_PRICE_10}
+      - STRIPE_CREDIT_PRICE_25=${STRIPE_CREDIT_PRICE_25}
+      - STRIPE_CREDIT_PRICE_50=${STRIPE_CREDIT_PRICE_50}
+      - STRIPE_CREDIT_PRICE_100=${STRIPE_CREDIT_PRICE_100}
+      - EMAIL_DISABLED=true
+      - SKIP_EMAIL_VERIFICATION=true
+      - BETTER_AUTH_SECRET=${STAGING_BETTER_AUTH_SECRET}
+      - BETTER_AUTH_URL=https://staging.api.wopr.bot
+      - UI_ORIGIN=https://staging.wopr.bot,https://staging.app.wopr.bot
+      - PLATFORM_DOMAIN=staging.wopr.bot
+      - COOKIE_DOMAIN=.staging.wopr.bot
+      - PLATFORM_SECRET=${STAGING_PLATFORM_SECRET:-${PLATFORM_SECRET}}
+      - PLATFORM_ENCRYPTION_SECRET=${STAGING_PLATFORM_ENCRYPTION_SECRET:-${PLATFORM_ENCRYPTION_SECRET}}
+      - WOPR_BOT_IMAGE=ghcr.io/wopr-network/wopr:staging
+      - DO_API_TOKEN=${DO_API_TOKEN}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS:-172.16.0.0/12}
+      - NODE_ENV=staging
+      - FLEET_API_TOKEN=${FLEET_API_TOKEN}
+      - REGISTRY_USERNAME=wopr-network
+      - REGISTRY_PASSWORD=${GHCR_TOKEN}
+      - REGISTRY_SERVER=ghcr.io
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  staging-ui:
+    image: ghcr.io/wopr-network/wopr-platform-ui:staging
+    environment:
+      - NEXT_PUBLIC_API_URL=https://staging.api.wopr.bot
+      - BETTER_AUTH_URL=https://staging.api.wopr.bot
+      - NEXT_PUBLIC_APP_DOMAIN=staging.app.wopr.bot
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  staging_postgres_data:
+  staging_platform_data:

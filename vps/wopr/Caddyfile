@@ -18,3 +18,15 @@ api.wopr.bot {
 *.wopr.bot {
 	reverse_proxy platform-api:3100
 }
+
+staging.wopr.bot {
+	reverse_proxy staging-ui:3000
+}
+
+staging.app.wopr.bot {
+	reverse_proxy staging-ui:3000
+}
+
+staging.api.wopr.bot {
+	reverse_proxy staging-api:3100
+}
