@@ -28,5 +28,5 @@ staging.app.runpaperclip.com {
 }
 
 staging.api.runpaperclip.com {
-	reverse_proxy staging-api:3100
+	reverse_proxy staging-api:3200
 }
