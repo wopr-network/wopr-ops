@@ -34,8 +34,5 @@ staging.app.runpaperclip.com {
 }
 
 staging.api.runpaperclip.com {
-	basic_auth {
-		staging $2a$14$fJJ4LQ/s/zHY6vAjrmvIvuGD8rh7a3un2Kj7PWaCVll1aQ2Hi8bAq
-	}
 	reverse_proxy staging-api:3200
 }
