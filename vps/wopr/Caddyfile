@@ -20,13 +20,22 @@ api.wopr.bot {
 }
 
 staging.wopr.bot {
+	basic_auth {
+		staging $2a$14$fJJ4LQ/s/zHY6vAjrmvIvuGD8rh7a3un2Kj7PWaCVll1aQ2Hi8bAq
+	}
 	reverse_proxy staging-ui:3000
 }
 
 staging.app.wopr.bot {
+	basic_auth {
+		staging $2a$14$fJJ4LQ/s/zHY6vAjrmvIvuGD8rh7a3un2Kj7PWaCVll1aQ2Hi8bAq
+	}
 	reverse_proxy staging-ui:3000
 }
 
 staging.api.wopr.bot {
+	basic_auth {
+		staging $2a$14$fJJ4LQ/s/zHY6vAjrmvIvuGD8rh7a3un2Kj7PWaCVll1aQ2Hi8bAq
+	}
 	reverse_proxy staging-api:3100
 }
