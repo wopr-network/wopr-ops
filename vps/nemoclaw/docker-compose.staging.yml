@@ -16,6 +16,7 @@ services:
 
   staging-api:
     image: ghcr.io/wopr-network/nemoclaw-platform:staging
+    user: "0:0"
     restart: unless-stopped
     depends_on:
       staging-postgres:
