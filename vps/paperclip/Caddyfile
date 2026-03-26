@@ -1,0 +1,32 @@
+{
+	email admin@runpaperclip.com
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+}
+
+runpaperclip.com {
+	reverse_proxy platform-ui:3000
+}
+
+app.runpaperclip.com {
+	reverse_proxy platform-ui:3000
+}
+
+api.runpaperclip.com {
+	reverse_proxy platform-api:3200
+}
+
+*.runpaperclip.com {
+	reverse_proxy platform-api:3200
+}
+
+staging.runpaperclip.com {
+	reverse_proxy staging-ui:3000
+}
+
+staging.app.runpaperclip.com {
+	reverse_proxy staging-ui:3000
+}
+
+staging.api.runpaperclip.com {
+	reverse_proxy staging-api:3100
+}

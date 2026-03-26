@@ -23,6 +23,9 @@ jobs:
     permissions:
       packages: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -30,30 +33,62 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve images to promote
-        id: images
+      - name: Resolve product config
+        id: config
         run: |
           case "${{ inputs.product }}" in
             paperclip)
               echo "images=paperclip-platform paperclip-platform-ui" >> "$GITHUB_OUTPUT"
+              echo "hosts=68.183.160.201" >> "$GITHUB_OUTPUT"
+              echo "products=paperclip" >> "$GITHUB_OUTPUT"
               ;;
             wopr)
               echo "images=wopr-platform wopr-platform-ui" >> "$GITHUB_OUTPUT"
+              echo "hosts=138.68.30.247" >> "$GITHUB_OUTPUT"
+              echo "products=wopr" >> "$GITHUB_OUTPUT"
               ;;
             holyship)
               echo "images=holyship holyship-ui" >> "$GITHUB_OUTPUT"
+              echo "hosts=138.68.46.192" >> "$GITHUB_OUTPUT"
+              echo "products=holyship" >> "$GITHUB_OUTPUT"
               ;;
             nemoclaw)
               echo "images=nemoclaw-platform nemoclaw-platform-ui" >> "$GITHUB_OUTPUT"
+              echo "hosts=167.172.208.149" >> "$GITHUB_OUTPUT"
+              echo "products=nemoclaw" >> "$GITHUB_OUTPUT"
               ;;
             all)
               echo "images=paperclip-platform paperclip-platform-ui wopr-platform wopr-platform-ui holyship holyship-ui nemoclaw-platform nemoclaw-platform-ui" >> "$GITHUB_OUTPUT"
+              echo "hosts=68.183.160.201 138.68.30.247 138.68.46.192 167.172.208.149" >> "$GITHUB_OUTPUT"
+              echo "products=paperclip wopr holyship nemoclaw" >> "$GITHUB_OUTPUT"
               ;;
           esac
 
+      - name: Backup prod DB before promotion
+        env:
+          SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          for product in ${{ steps.config.outputs.products }}; do
+            case "$product" in
+              paperclip) host=68.183.160.201 ;;
+              wopr)      host=138.68.30.247 ;;
+              holyship)  host=138.68.46.192 ;;
+              nemoclaw)  host=167.172.208.149 ;;
+            esac
+            echo "Backing up $product on $host..."
+            scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
+              scripts/backup-prod.sh "root@$host:/tmp/backup-prod.sh"
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
+              "root@$host" "chmod +x /tmp/backup-prod.sh && /tmp/backup-prod.sh $product"
+          done
+
       - name: Retag :staging → :latest
         run: |
-          for img in ${{ steps.images.outputs.images }}; do
+          for img in ${{ steps.config.outputs.images }}; do
             echo "Promoting $REGISTRY/$img:staging → :latest"
             docker pull "$REGISTRY/$img:staging"
             docker tag  "$REGISTRY/$img:staging" "$REGISTRY/$img:latest"
@@ -66,8 +101,12 @@ jobs:
           echo "## Promoted to production" >> "$GITHUB_SUMMARY"
           echo "" >> "$GITHUB_SUMMARY"
           echo "**Product:** ${{ inputs.product }}" >> "$GITHUB_SUMMARY"
-          echo "**Images:**" >> "$GITHUB_SUMMARY"
-          for img in ${{ steps.images.outputs.images }}; do
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "### DB Backups" >> "$GITHUB_SUMMARY"
+          echo "Production databases backed up before promotion." >> "$GITHUB_SUMMARY"
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "### Images" >> "$GITHUB_SUMMARY"
+          for img in ${{ steps.config.outputs.images }}; do
             echo "- \`$REGISTRY/$img:staging\` → \`:latest\`" >> "$GITHUB_SUMMARY"
           done
           echo "" >> "$GITHUB_SUMMARY"

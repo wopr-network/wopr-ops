@@ -34,6 +34,7 @@ services:
       - STRIPE_CREDIT_PRICE_25=${STRIPE_CREDIT_PRICE_25}
       - STRIPE_CREDIT_PRICE_50=${STRIPE_CREDIT_PRICE_50}
       - STRIPE_CREDIT_PRICE_100=${STRIPE_CREDIT_PRICE_100}
+      - RESEND_API_KEY=re_staging_disabled
       - EMAIL_DISABLED=true
       - SKIP_EMAIL_VERIFICATION=true
       - BETTER_AUTH_SECRET=${STAGING_BETTER_AUTH_SECRET}
@@ -54,7 +55,7 @@ services:
       - PROVISION_SECRET=${PROVISION_SECRET}
       - GATEWAY_URL=${GATEWAY_URL}
       - FLEET_DOCKER_NETWORK=${FLEET_DOCKER_NETWORK}
-      - NODE_ENV=staging
+      - NODE_ENV=production
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
       interval: 30s

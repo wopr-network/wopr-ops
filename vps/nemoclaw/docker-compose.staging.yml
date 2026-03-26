@@ -31,6 +31,7 @@ services:
       - GATEWAY_URL=https://staging.api.nemopod.com/v1
       - POOL_SIZE_DEFAULT=2
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - RESEND_API_KEY=re_staging_disabled
       - EMAIL_DISABLED=true
       - SKIP_EMAIL_VERIFICATION=true
       - BETTER_AUTH_SECRET=${STAGING_BETTER_AUTH_SECRET}
@@ -41,7 +42,7 @@ services:
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      - NODE_ENV=staging
+      - NODE_ENV=production
     volumes:
       - staging_fleet_data:/data
       - /var/run/docker.sock:/var/run/docker.sock

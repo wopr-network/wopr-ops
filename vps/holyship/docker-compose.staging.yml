@@ -37,6 +37,7 @@ services:
       - GITHUB_CLIENT_ID=${GITHUB_APP_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_APP_CLIENT_SECRET}
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      - RESEND_API_KEY=re_staging_disabled
       - EMAIL_DISABLED=true
       - SKIP_EMAIL_VERIFICATION=true
       - BETTER_AUTH_SECRET=${STAGING_BETTER_AUTH_SECRET}
@@ -55,7 +56,7 @@ services:
       - REGISTRY_PASSWORD=${REGISTRY_PASSWORD}
       - REGISTRY_SERVER=${REGISTRY_SERVER}
       - FLEET_DATA_DIR=/tmp/fleet
-      - NODE_ENV=staging
+      - NODE_ENV=production
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3001/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
       interval: 30s

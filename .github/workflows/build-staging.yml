@@ -1,0 +1,139 @@
+name: Build staging images (reusable)
+
+# Called by product repos via workflow_call
+on:
+  workflow_call:
+    inputs:
+      product:
+        required: true
+        type: string
+        description: "Product name (wopr, paperclip, holyship, nemoclaw)"
+      api_image:
+        required: true
+        type: string
+        description: "API image name (e.g. wopr-platform)"
+      ui_image:
+        required: false
+        type: string
+        description: "UI image name (e.g. wopr-platform-ui), empty if no UI"
+      api_context:
+        required: false
+        type: string
+        default: "."
+        description: "Docker build context for API"
+      api_dockerfile:
+        required: false
+        type: string
+        default: "Dockerfile"
+        description: "Dockerfile path for API"
+    secrets:
+      PROD_SSH_KEY:
+        required: true
+
+env:
+  REGISTRY: ghcr.io/wopr-network
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
+          SHA="${{ github.sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION (${SHORT_SHA})"
+
+      - name: Build and push API :staging
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.api_context }}
+          file: ${{ inputs.api_dockerfile }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ inputs.api_image }}:staging
+            ${{ env.REGISTRY }}/${{ inputs.api_image }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ inputs.api_image }}:${{ steps.version.outputs.short_sha }}
+
+      - name: Build and push UI :staging
+        if: inputs.ui_image != ''
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.ui
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ inputs.ui_image }}:staging
+            ${{ env.REGISTRY }}/${{ inputs.ui_image }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ inputs.ui_image }}:${{ steps.version.outputs.short_sha }}
+
+      - name: Deploy to staging VPS
+        env:
+          SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          case "${{ inputs.product }}" in
+            paperclip) HOST=68.183.160.201 ;;
+            wopr)      HOST=138.68.30.247 ;;
+            holyship)  HOST=138.68.46.192 ;;
+            nemoclaw)  HOST=167.172.208.149 ;;
+          esac
+
+          # Copy and run deploy script
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "root@$HOST" \
+            'bash -s' <<'DEPLOY_SCRIPT'
+          set -euo pipefail
+          PRODUCT="${{ inputs.product }}"
+          case "$PRODUCT" in
+            wopr)       DIR=/opt/wopr-platform;     DB=wopr_platform;     USER=wopr ;;
+            paperclip)  DIR=/opt/paperclip-platform; DB=paperclip_platform; USER=paperclip ;;
+            holyship)   DIR=/opt/holyship;           DB=holyship;          USER=holyship ;;
+            nemoclaw)   DIR=/opt/nemoclaw-platform;  DB=nemoclaw_platform; USER=nemoclaw ;;
+          esac
+          cd "$DIR"
+          COMPOSE="docker compose -f docker-compose.yml -f docker-compose.staging.yml"
+          $COMPOSE stop staging-api 2>/dev/null || true
+          $COMPOSE pull staging-api staging-ui 2>/dev/null || $COMPOSE pull staging-api
+          $COMPOSE up -d staging-postgres
+          sleep 3
+          $COMPOSE exec -T staging-postgres psql -U "$USER" -d "$DB" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" 2>/dev/null || true
+          docker compose exec -T postgres pg_dump -U "$USER" --no-owner --no-acl "$DB" | \
+            $COMPOSE exec -T staging-postgres psql -U "$USER" -d "$DB" -q
+          $COMPOSE up -d staging-api staging-ui 2>/dev/null || $COMPOSE up -d staging-api
+          docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || docker compose restart caddy
+          echo "Staging deployed for $PRODUCT"
+          DEPLOY_SCRIPT
+
+      - name: Summary
+        run: |
+          echo "## Staging build & deploy" >> "$GITHUB_SUMMARY"
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "**Product:** ${{ inputs.product }}" >> "$GITHUB_SUMMARY"
+          echo "**Version:** ${{ steps.version.outputs.version }} (${{ steps.version.outputs.short_sha }})" >> "$GITHUB_SUMMARY"
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "### Images pushed" >> "$GITHUB_SUMMARY"
+          echo "- \`${{ env.REGISTRY }}/${{ inputs.api_image }}:staging\`" >> "$GITHUB_SUMMARY"
+          echo "- \`${{ env.REGISTRY }}/${{ inputs.api_image }}:${{ steps.version.outputs.version }}\`" >> "$GITHUB_SUMMARY"
+          if [ -n "${{ inputs.ui_image }}" ]; then
+            echo "- \`${{ env.REGISTRY }}/${{ inputs.ui_image }}:staging\`" >> "$GITHUB_SUMMARY"
+            echo "- \`${{ env.REGISTRY }}/${{ inputs.ui_image }}:${{ steps.version.outputs.version }}\`" >> "$GITHUB_SUMMARY"
+          fi

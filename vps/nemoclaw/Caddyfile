@@ -25,3 +25,23 @@ api.nemopod.com {
 *.nemopod.com {
 	reverse_proxy nemoclaw-platform:3100
 }
+
+staging.nemopod.com {
+	reverse_proxy staging-ui:3000
+}
+
+staging.app.nemopod.com {
+	handle /trpc/* {
+		reverse_proxy staging-api:3100
+	}
+	handle /api/* {
+		reverse_proxy staging-api:3100
+	}
+	handle {
+		reverse_proxy staging-ui:3000
+	}
+}
+
+staging.api.nemopod.com {
+	reverse_proxy staging-api:3100
+}

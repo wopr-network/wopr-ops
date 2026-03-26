@@ -1,0 +1,19 @@
+{
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+}
+
+holyship.wtf, www.holyship.wtf {
+	reverse_proxy ui:3000
+}
+
+api.holyship.wtf {
+	reverse_proxy api:3001
+}
+
+staging.holyship.wtf {
+	reverse_proxy staging-ui:3000
+}
+
+staging.api.holyship.wtf {
+	reverse_proxy staging-api:3001
+}

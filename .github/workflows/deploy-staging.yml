@@ -1,0 +1,57 @@
+name: Deploy to staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: Product to deploy
+        required: true
+        type: choice
+        options:
+          - paperclip
+          - wopr
+          - holyship
+          - nemoclaw
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve host
+        id: config
+        run: |
+          case "${{ inputs.product }}" in
+            paperclip) echo "host=68.183.160.201" >> "$GITHUB_OUTPUT" ;;
+            wopr)      echo "host=138.68.30.247" >> "$GITHUB_OUTPUT" ;;
+            holyship)  echo "host=138.68.46.192" >> "$GITHUB_OUTPUT" ;;
+            nemoclaw)  echo "host=167.172.208.149" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Deploy staging
+        env:
+          SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          HOST="${{ steps.config.outputs.host }}"
+
+          echo "=== Copying deploy script ==="
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
+            scripts/deploy-staging.sh "root@$HOST:/tmp/deploy-staging.sh"
+
+          echo "=== Running deploy ==="
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
+            "root@$HOST" "chmod +x /tmp/deploy-staging.sh && /tmp/deploy-staging.sh ${{ inputs.product }}"
+
+      - name: Summary
+        run: |
+          echo "## Staging deployed" >> "$GITHUB_SUMMARY"
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "**Product:** ${{ inputs.product }}" >> "$GITHUB_SUMMARY"
+          echo "**Host:** ${{ steps.config.outputs.host }}" >> "$GITHUB_SUMMARY"
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "Prod DB was copied into staging. App migrations run on boot." >> "$GITHUB_SUMMARY"
