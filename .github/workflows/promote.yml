@@ -98,16 +98,15 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## Promoted to production" >> "$GITHUB_SUMMARY"
-          echo "" >> "$GITHUB_SUMMARY"
-          echo "**Product:** ${{ inputs.product }}" >> "$GITHUB_SUMMARY"
-          echo "" >> "$GITHUB_SUMMARY"
-          echo "### DB Backups" >> "$GITHUB_SUMMARY"
-          echo "Production databases backed up before promotion." >> "$GITHUB_SUMMARY"
-          echo "" >> "$GITHUB_SUMMARY"
-          echo "### Images" >> "$GITHUB_SUMMARY"
+          SUMMARY="${GITHUB_STEP_SUMMARY:-${GITHUB_SUMMARY:-/dev/null}}"
+          echo "## Promoted to production" >> "$SUMMARY"
+          echo "" >> "$SUMMARY"
+          echo "**Product:** ${{ inputs.product }}" >> "$SUMMARY"
+          echo "" >> "$SUMMARY"
+          echo "### Images" >> "$SUMMARY"
           for img in ${{ steps.config.outputs.images }}; do
-            echo "- \`$REGISTRY/$img:staging\` → \`:latest\`" >> "$GITHUB_SUMMARY"
+            echo "- \`$REGISTRY/$img:staging\` → \`:latest\`" >> "$SUMMARY"
           done
-          echo "" >> "$GITHUB_SUMMARY"
-          echo "Watchtower will pull and restart within 60s." >> "$GITHUB_SUMMARY"
+          echo "" >> "$SUMMARY"
+          echo "Watchtower will pull and restart within 60s." >> "$SUMMARY"
+          echo "Promotion complete for ${{ inputs.product }}"
