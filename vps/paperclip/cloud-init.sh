@@ -166,9 +166,7 @@ services:
   platform-ui:
     image: ghcr.io/wopr-network/paperclip-platform-ui:latest
     environment:
-      - NEXT_PUBLIC_API_URL=https://api.runpaperclip.com
       - BETTER_AUTH_URL=https://api.runpaperclip.com
-      - NEXT_PUBLIC_APP_DOMAIN=runpaperclip.com
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
       interval: 30s
