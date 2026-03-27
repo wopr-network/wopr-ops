@@ -102,12 +102,22 @@ jobs:
             echo "✓ $img promoted"
           done
 
-      - name: Wait for Watchtower to pull
+      - name: Pull and restart on VPS
         env:
           SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
         run: |
-          echo "Waiting 90s for Watchtower to detect and pull new images..."
-          sleep 90
+          for product in ${{ steps.config.outputs.products }}; do
+            case "$product" in
+              paperclip) host=68.183.160.201; dir=/opt/paperclip-platform ;;
+              wopr)      host=138.68.30.247;  dir=/opt/wopr-platform ;;
+              holyship)  host=138.68.46.192;  dir=/opt/holyship ;;
+              nemoclaw)  host=167.172.208.149; dir=/opt/nemoclaw-platform ;;
+            esac
+            echo "Deploying $product on $host..."
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "root@$host" \
+              "cd $dir && docker compose pull && docker compose up -d --force-recreate platform-api platform-ui 2>/dev/null || docker compose up -d && docker image prune -f"
+            echo "✓ $product containers restarted"
+          done
 
       - name: Health check
         id: health
@@ -117,21 +127,22 @@ jobs:
         run: |
           for product in ${{ steps.config.outputs.products }}; do
             case "$product" in
-              paperclip) host=68.183.160.201; port=3200 ;;
-              wopr)      host=138.68.30.247;  port=3100 ;;
-              holyship)  host=138.68.46.192;  port=3100 ;;
-              nemoclaw)  host=167.172.208.149; port=3100 ;;
+              paperclip) host=68.183.160.201; dir=/opt/paperclip-platform; api=platform-api ;;
+              wopr)      host=138.68.30.247;  dir=/opt/wopr-platform;     api=platform-api ;;
+              holyship)  host=138.68.46.192;  dir=/opt/holyship;          api=platform-api ;;
+              nemoclaw)  host=167.172.208.149; dir=/opt/nemoclaw-platform; api=platform-api ;;
             esac
             echo "Health checking $product on $host..."
             HEALTHY=false
-            for i in $(seq 1 12); do
-              if ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
-                "root@$host" "curl -sf http://localhost:$port/health" >/dev/null 2>&1; then
-                echo "✓ $product is healthy"
+            for i in $(seq 1 30); do
+              STATUS=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
+                "root@$host" "cd $dir && docker compose exec -T $api curl -sf http://localhost:3200/health 2>/dev/null || docker compose exec -T $api curl -sf http://localhost:3100/health 2>/dev/null" || true)
+              if [ -n "$STATUS" ]; then
+                echo "✓ $product is healthy: $STATUS"
                 HEALTHY=true
                 break
               fi
-              echo "  Waiting... ($i/12)"
+              echo "  Waiting... ($i/30)"
               sleep 5
             done
             if [ "$HEALTHY" = false ]; then
@@ -145,19 +156,31 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
         run: |
-          echo "::error::Health check failed — rolling back"
+          echo "::error::Health check failed — rolling back images and restarting"
           for img in ${{ steps.config.outputs.images }}; do
-            echo "Rolling back $img: pulling :latest-previous, retagging to :latest"
+            echo "Rolling back $img: retagging :latest-previous → :latest"
             if docker pull "$REGISTRY/$img:latest-previous" 2>/dev/null; then
               docker tag "$REGISTRY/$img:latest-previous" "$REGISTRY/$img:latest"
               docker push "$REGISTRY/$img:latest"
-              echo "✓ $img rolled back"
+              echo "✓ $img rolled back in GHCR"
             else
               echo "::warning::No previous image for $img — manual intervention needed"
             fi
           done
-          echo "Watchtower will pull rolled-back images within 60s."
-          echo "Restore DB from backup: ssh root@<host> 'gunzip -c /opt/<product>/backups/<latest>.sql.gz | docker compose exec -T postgres psql -U <user> -d <db>'"
+          # Re-pull rolled-back images on VPS
+          for product in ${{ steps.config.outputs.products }}; do
+            case "$product" in
+              paperclip) host=68.183.160.201; dir=/opt/paperclip-platform ;;
+              wopr)      host=138.68.30.247;  dir=/opt/wopr-platform ;;
+              holyship)  host=138.68.46.192;  dir=/opt/holyship ;;
+              nemoclaw)  host=167.172.208.149; dir=/opt/nemoclaw-platform ;;
+            esac
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "root@$host" \
+              "cd $dir && docker compose pull && docker compose up -d --force-recreate"
+            echo "✓ $product rolled back on VPS"
+          done
+          echo ""
+          echo "DB restore (if needed): ssh root@<host> 'gunzip -c /opt/<product>/backups/<latest>.sql.gz | docker compose exec -T postgres psql -U <user> -d <db>'"
 
       - name: Fail workflow if health check failed
         if: steps.health.outcome == 'failure'
