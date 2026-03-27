@@ -90,23 +90,90 @@ jobs:
         run: |
           for img in ${{ steps.config.outputs.images }}; do
             echo "Promoting $REGISTRY/$img:staging → :latest"
+            # Save current :latest as rollback target
+            if docker pull "$REGISTRY/$img:latest" 2>/dev/null; then
+              docker tag "$REGISTRY/$img:latest" "$REGISTRY/$img:latest-previous"
+              docker push "$REGISTRY/$img:latest-previous"
+              echo "  Saved previous :latest as :latest-previous"
+            fi
             docker pull "$REGISTRY/$img:staging"
             docker tag  "$REGISTRY/$img:staging" "$REGISTRY/$img:latest"
             docker push "$REGISTRY/$img:latest"
             echo "✓ $img promoted"
           done
 
-      - name: Summary
+      - name: Wait for Watchtower to pull
+        env:
+          SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
         run: |
-          SUMMARY="${GITHUB_STEP_SUMMARY:-${GITHUB_SUMMARY:-/dev/null}}"
-          echo "## Promoted to production" >> "$SUMMARY"
-          echo "" >> "$SUMMARY"
-          echo "**Product:** ${{ inputs.product }}" >> "$SUMMARY"
-          echo "" >> "$SUMMARY"
-          echo "### Images" >> "$SUMMARY"
-          for img in ${{ steps.config.outputs.images }}; do
-            echo "- \`$REGISTRY/$img:staging\` → \`:latest\`" >> "$SUMMARY"
+          echo "Waiting 90s for Watchtower to detect and pull new images..."
+          sleep 90
+
+      - name: Health check
+        id: health
+        continue-on-error: true
+        env:
+          SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          for product in ${{ steps.config.outputs.products }}; do
+            case "$product" in
+              paperclip) host=68.183.160.201; port=3200 ;;
+              wopr)      host=138.68.30.247;  port=3100 ;;
+              holyship)  host=138.68.46.192;  port=3100 ;;
+              nemoclaw)  host=167.172.208.149; port=3100 ;;
+            esac
+            echo "Health checking $product on $host..."
+            HEALTHY=false
+            for i in $(seq 1 12); do
+              if ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
+                "root@$host" "curl -sf http://localhost:$port/health" >/dev/null 2>&1; then
+                echo "✓ $product is healthy"
+                HEALTHY=true
+                break
+              fi
+              echo "  Waiting... ($i/12)"
+              sleep 5
+            done
+            if [ "$HEALTHY" = false ]; then
+              echo "::error::$product health check failed on $host"
+              exit 1
+            fi
           done
-          echo "" >> "$SUMMARY"
-          echo "Watchtower will pull and restart within 60s." >> "$SUMMARY"
+
+      - name: Rollback on failure
+        if: steps.health.outcome == 'failure'
+        env:
+          SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          echo "::error::Health check failed — rolling back"
+          for img in ${{ steps.config.outputs.images }}; do
+            echo "Rolling back $img: pulling :latest-previous, retagging to :latest"
+            if docker pull "$REGISTRY/$img:latest-previous" 2>/dev/null; then
+              docker tag "$REGISTRY/$img:latest-previous" "$REGISTRY/$img:latest"
+              docker push "$REGISTRY/$img:latest"
+              echo "✓ $img rolled back"
+            else
+              echo "::warning::No previous image for $img — manual intervention needed"
+            fi
+          done
+          echo "Watchtower will pull rolled-back images within 60s."
+          echo "Restore DB from backup: ssh root@<host> 'gunzip -c /opt/<product>/backups/<latest>.sql.gz | docker compose exec -T postgres psql -U <user> -d <db>'"
+
+      - name: Fail workflow if health check failed
+        if: steps.health.outcome == 'failure'
+        run: exit 1
+
+      - name: Summary
+        if: steps.health.outcome != 'failure'
+        run: |
+          echo "## Promoted to production" >> "$GITHUB_SUMMARY"
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "**Product:** ${{ inputs.product }}" >> "$GITHUB_SUMMARY"
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "### Images" >> "$GITHUB_SUMMARY"
+          for img in ${{ steps.config.outputs.images }}; do
+            echo "- \`$REGISTRY/$img:staging\` → \`:latest\`" >> "$GITHUB_SUMMARY"
+          done
+          echo "" >> "$GITHUB_SUMMARY"
+          echo "### Health check: ✅ passed" >> "$GITHUB_SUMMARY"
           echo "Promotion complete for ${{ inputs.product }}"
