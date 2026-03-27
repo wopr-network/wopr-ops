@@ -167,20 +167,39 @@ jobs:
               echo "::warning::No previous image for $img — manual intervention needed"
             fi
           done
-          # Re-pull rolled-back images on VPS
+          # Re-pull rolled-back images, restore DB, and restart on VPS
           for product in ${{ steps.config.outputs.products }}; do
             case "$product" in
-              paperclip) host=68.183.160.201; dir=/opt/paperclip-platform ;;
-              wopr)      host=138.68.30.247;  dir=/opt/wopr-platform ;;
-              holyship)  host=138.68.46.192;  dir=/opt/holyship ;;
-              nemoclaw)  host=167.172.208.149; dir=/opt/nemoclaw-platform ;;
+              paperclip) host=68.183.160.201; dir=/opt/paperclip-platform; db=paperclip_platform; pguser=paperclip ;;
+              wopr)      host=138.68.30.247;  dir=/opt/wopr-platform;     db=wopr_platform;      pguser=wopr ;;
+              holyship)  host=138.68.46.192;  dir=/opt/holyship;          db=holyship;           pguser=holyship ;;
+              nemoclaw)  host=167.172.208.149; dir=/opt/nemoclaw-platform; db=nemoclaw_platform;  pguser=nemoclaw ;;
             esac
-            ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "root@$host" \
-              "cd $dir && docker compose pull && docker compose up -d --force-recreate"
-            echo "✓ $product rolled back on VPS"
+            echo "Rolling back $product on $host..."
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "root@$host" bash -s <<ROLLBACK
+          set -euo pipefail
+          cd $dir
+
+          # 1. Stop API to prevent writes during restore
+          docker compose stop platform-api 2>/dev/null || true
+
+          # 2. Restore DB from the most recent backup
+          BACKUP=\$(ls -t $dir/backups/${db}-*.sql.gz 2>/dev/null | head -1)
+          if [ -n "\$BACKUP" ]; then
+            echo "Restoring DB from \$BACKUP..."
+            docker compose exec -T postgres psql -U $pguser -d $db -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+            gunzip -c "\$BACKUP" | docker compose exec -T postgres psql -U $pguser -d $db -q
+            echo "✓ DB restored from \$BACKUP"
+          else
+            echo "::warning::No backup found in $dir/backups/ — DB not restored"
+          fi
+
+          # 3. Pull rolled-back images and restart
+          docker compose pull
+          docker compose up -d --force-recreate
+          echo "✓ $product fully rolled back (images + DB)"
+          ROLLBACK
           done
-          echo ""
-          echo "DB restore (if needed): ssh root@<host> 'gunzip -c /opt/<product>/backups/<latest>.sql.gz | docker compose exec -T postgres psql -U <user> -d <db>'"
 
       - name: Fail workflow if health check failed
         if: steps.health.outcome == 'failure'
