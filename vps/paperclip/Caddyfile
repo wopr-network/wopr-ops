@@ -8,7 +8,7 @@ runpaperclip.com {
 }
 
 app.runpaperclip.com {
-	reverse_proxy platform-ui:3000
+	redir https://runpaperclip.com{uri} permanent
 }
 
 api.runpaperclip.com {
@@ -27,10 +27,7 @@ staging.runpaperclip.com {
 }
 
 staging.app.runpaperclip.com {
-	basic_auth {
-		staging $2a$14$fJJ4LQ/s/zHY6vAjrmvIvuGD8rh7a3un2Kj7PWaCVll1aQ2Hi8bAq
-	}
-	reverse_proxy staging-ui:3000
+	redir https://staging.runpaperclip.com{uri} permanent
 }
 
 staging.api.runpaperclip.com {

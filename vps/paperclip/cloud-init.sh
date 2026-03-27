@@ -64,7 +64,7 @@ runpaperclip.com {
 }
 
 app.runpaperclip.com {
-	reverse_proxy platform-ui:3000
+	redir https://runpaperclip.com{uri} permanent
 }
 
 api.runpaperclip.com {
@@ -137,7 +137,7 @@ services:
       - EMAIL_FROM=noreply@runpaperclip.com
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
       - BETTER_AUTH_URL=https://api.runpaperclip.com
-      - UI_ORIGIN=https://runpaperclip.com,https://app.runpaperclip.com
+      - UI_ORIGIN=https://runpaperclip.com
       - PLATFORM_DOMAIN=runpaperclip.com
       - COOKIE_DOMAIN=.runpaperclip.com
       - PLATFORM_SECRET=${PLATFORM_SECRET}
@@ -168,7 +168,7 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=https://api.runpaperclip.com
       - BETTER_AUTH_URL=https://api.runpaperclip.com
-      - NEXT_PUBLIC_APP_DOMAIN=app.runpaperclip.com
+      - NEXT_PUBLIC_APP_DOMAIN=runpaperclip.com
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
       interval: 30s

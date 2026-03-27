@@ -39,7 +39,7 @@ services:
       - SKIP_EMAIL_VERIFICATION=true
       - BETTER_AUTH_SECRET=${STAGING_BETTER_AUTH_SECRET}
       - BETTER_AUTH_URL=https://staging.api.runpaperclip.com
-      - UI_ORIGIN=https://staging.runpaperclip.com,https://staging.app.runpaperclip.com
+      - UI_ORIGIN=https://staging.runpaperclip.com
       - PLATFORM_DOMAIN=staging.runpaperclip.com
       - COOKIE_DOMAIN=.staging.runpaperclip.com
       - PLATFORM_SECRET=${STAGING_PLATFORM_SECRET:-${PLATFORM_SECRET}}
@@ -68,7 +68,7 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=https://staging.api.runpaperclip.com
       - BETTER_AUTH_URL=https://staging.api.runpaperclip.com
-      - NEXT_PUBLIC_APP_DOMAIN=staging.app.runpaperclip.com
+      - NEXT_PUBLIC_APP_DOMAIN=staging.runpaperclip.com
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000', (r) => process.exit(r.statusCode === 200 ? 0 : 1))\""]
       interval: 30s
