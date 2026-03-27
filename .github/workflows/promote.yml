@@ -83,7 +83,7 @@ jobs:
             scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
               scripts/backup-prod.sh "root@$host:/tmp/backup-prod.sh"
             ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
-              "root@$host" "chmod +x /tmp/backup-prod.sh && /tmp/backup-prod.sh $product"
+              "root@$host" "chmod +x /tmp/backup-prod.sh && /tmp/backup-prod.sh $product ${{ github.sha }}"
           done
 
       - name: Retag :staging → :latest
