@@ -4,3 +4,5 @@ local/gpu/.env
 .env.local
 *.env.local
 vps/**/.env.production
+*.env.production
+*.env.production.bak
